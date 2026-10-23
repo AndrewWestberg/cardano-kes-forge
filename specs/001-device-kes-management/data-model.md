@@ -1,0 +1,75 @@
+# Phase 1 Data Model
+
+Normative design for [spec.md](spec.md). Protocol encodings are in [device-protocol.md](contracts/device-protocol.md); host/backup file rules in [cli-backup.md](contracts/cli-backup.md). Fields marked secret never enter ordinary response structures, logs or fixtures.
+
+## Shared types and identity
+
+- `DeviceId`: 16 random bytes, bound to pinned device Ed25519 identity key and provisioning evidence.
+- `PoolId`: BLAKE2b-224 of the registered 32-byte cold verification key; full 28 bytes, not a user label or slot index.
+- `IncarnationId`, `GenerationId`, `RequestId`: independent 16-byte random identifiers. A hardware slot 0–31 is only an internal location. Identity does not change when another slot is deleted.
+- `Revision`, generation number, management sequence, credential epoch, certificate counter and absolute period: checked unsigned 64-bit integers. Overflow is an explicit failure, never wraparound. Relative period: 0–63.
+- `NetworkBinding`: network magic, SHA-256 of exact enrolled Shelley genesis bytes, `slots_per_kes_period > 0`, `1 <= max_kes_evolutions <= 64`. The genesis digest is the platform's enrollment binding, not a claim to equal the node's differently encoded genesis-hash type. Nodes compare the exact enrolled parameters and identity before use.
+- Fixed 32-byte verification keys; 448-byte Sum6KES signatures; 608-byte canonical signing state. Algorithm/version identifiers are explicit at persistence/file boundaries.
+
+## Entities
+
+| Entity | Fields and relationships | Ownership/validation |
+|---|---|---|
+| Device | identity/public key, silicon revision, firmware digest/security version, hardware-policy digest, mode, health, directory revision, management root public key, pool directory | OTP roots and derived storage/identity/session keys are secret; production operations require verified release readiness, not merely `mode=release`. |
+| PoolRegistration | pool ID, incarnation, cold VK, network binding, credential public key/epoch/revoked flag, recipient public key/ID, management sequence, last management request digest/result, generation counter, certificate high-water mark, active/staged references | At most 32 live registrations. Management signs enrollment and changes; normal pool authority cannot change recipient/credential/network or delete registration. |
+| PoolTombstone | pool ID, last incarnation, management sequence, certificate/generation high-water marks, deletion revision | Persists after deletion. Re-enrollment requires management authorization of fresh incarnation and retained history. Directory full fails explicitly; no silent eviction/reset. |
+| KESGeneration | generation ID/number, creation request ID/digest, pool/incarnation, VK, relative period, secret state or erased marker, state, public-object digest, backup digest/recipient ID, optional certificate | At most one active/current-expired plus one staged generation. Staged generation cannot overwrite another. Generation completion merges into latest pool revision, not the active-state snapshot at job start. |
+| OperationalCertificate | canonical certificate bytes, cold VK, KES VK, counter, start period, digest | Verify cold signature over the release's OCertSignable bytes, cold identity, VK and counter. Network is NOT a signed opcert field; network binding is separately enforced by enrollment/session/request. Counter is strictly greater than the last activated counter for a new generation; exact duplicate certification is idempotent. |
+| ActivationIntent | target generation, certificate digest, absolute activation period, creation request ID, expected active generation, committed revision | Pool-authorized, durable, no offline approval. Period must be at/after certificate start and before expiry. Executes only on an authenticated eligible node period. Preserve on daemon/device/node restart. |
+| PublicObject | version, generation ID, 4064-byte public tree, encrypted backup bytes, lengths and digest | Contains no plaintext secret. Immutable while referenced. Authenticate through the secret snapshot. Write and read-verify before publishing the generation. |
+| BackupArtifact | version/suite, device/pool/incarnation/generation/VK, recipient ID, HPKE encapsulation/ciphertext/tag, device signature | Created once from period-zero state; identical bytes retained across evolution/reboot/recipient changes. Retrieval only for staged, active or current expired generation. Archive before replacement reclaims it. |
+| RecipientKeyFile | format/KDF parameters, public key/ID, salt, nonce, encrypted private key, tag | Backup workstation only. Keypair remains unchanged on password change. Password and unlocked key are transient secret memory. Pico/primary stores only public enrollment data and encrypted artifact. |
+| PoolConnection | socket, expected device identity, pool/incarnation, credential reference, network binding, security policy | Host configuration, never a decryption credential. OS ACL plus per-pool device authentication. Multiple processes may use configured pool connections; daemon serializes each pool's signing/lifecycle work. |
+| SigningAttempt | request ID, active generation, pool/incarnation, certificate digest, absolute/relative period, exact message bytes, message digest, monotonic deadline | Immutable once admitted; result must match every identity field, verify independently, and arrive before deadline. No durable mutation for an ordinary current-period signature. |
+| ConfirmedObservation | boot/session identity, pool/incarnation, generation, certificate digest, revision, confirmed relative period, health, host observation time, freshness | Host-only cache derived from normal acknowledgements/status. Reject lower revision and retired-generation updates. Disconnect marks unavailable immediately; a requested target is never an observation. |
+| ManagementEnvelope | device, scope, incarnation, operation, sequence, request ID, expected revision, payload digest, offline signature | Canonical domain-separated encoding; replay sequence survives reboot. Exact last duplicate returns recorded outcome; lower sequence or changed payload fails. Firmware-signing authority is distinct from this management authority and pool cold authority. |
+| DevelopmentInspection | device/pool/incarnation/generation, relative period, raw current state | Development-only protected file on trusted development workstation; absent from release image and normal node signing interface. Not an initial backup or an import format. |
+
+## Generation and pool transitions
+
+1. **Enroll:** management commits registration with recipient, cold key, network, machine credential and fresh incarnation. No KES secret yet.
+2. **Generate:** pool authority supplies expected next generation number and stable request ID. One bounded in-memory job captures incarnation, recipient and credential policy epochs. Power loss before durable publication leaves no usable generation. Completion rechecks those epochs and the vacant staged slot under the pool lock, merges with latest active state, persists key+immutable artifact reference, erases obsolete snapshots, then returns `staged`. Policy change cancels and wipes the job.
+3. **Certify:** staged → certified-staged after full certificate checks. This does not affect active telemetry or signing. Exact duplicate is harmless; different certificate for an already-certified generation conflicts.
+4. **Schedule:** certified-staged stays staged; durable activation intent added. No trusted device clock. Node period observation, not elapsed unpowered time, triggers execution.
+5. **Activate:** with eligible node period, evolve the replacement to `absolute_period - start_period`, validate its lifetime, commit it as active, retire/remove old active secret and old intent, finish cleanup before acknowledgement. Old public artifact may then be reclaimed. First activation uses the same transition with no previous active key.
+6. **Evolve:** active `(generation,r)` → same active `(generation,r')`, with `r' > r` and `r' < max_kes_evolutions`. Perform all cryptographic transitions, persist only final state, erase superseded state before acknowledgement. Same-period request succeeds without another write; earlier-period request fails. Evolution does not alter VK, certificate, generation ID or backup bytes.
+7. **Expire:** authenticated period at/after `start + max_kes_evolutions` commits secret erasure, retaining current expired public metadata/artifact and any staged replacement. Signing fails. Device does not expire keys while unpowered or fabricate a replacement.
+8. **Revoke/replace credential:** management commits epoch change, invalidates old sessions and cancels affected unpublished jobs. Other pools unchanged. Routine rotation remains pool-authorized.
+9. **Delete/retire:** management commits tombstone/retired state and wipes secrets and authorization caches before success. Retired device rejects signing/generation after restart. External backups are neither revoked nor erased.
+10. **Damaged:** irrecoverable authenticated-state inconsistency quarantines affected pool; directory/trust/entropy faults may be device-wide. No automatic blank reinitialization, import, old-snapshot restore or selection of another pool.
+
+A pool can retain its active/current-expired generation while one staged generation is generated/certified. Retired generations are never resurrected. A second staged generation returns `STAGED_CONFLICT`; explicit staged discard is management-authorized and retains generation-number/replay high-water marks. There is no extra authority needed for ordinary generate/certify/activate/schedule.
+
+## Signing and lifetime invariants
+
+- For certificate start `S`, permitted lifetime `L`, and authenticated node period `P`, require `S <= P < S+L`, checked addition, and `relative=P-S` no lower than committed evolution. Primitive capacity 64 does not override a smaller network limit.
+- Evolution and activation happen under pool serialization before new-period signing. A current-period sign itself causes no journal write. A signature is returned only after device self-verification; the node also verifies using its immutable attempt context before block submission.
+- An old-generation attempt either completes before activation or returns a typed stale-context error. Do not pair an old signature with a new certificate.
+- A compromised authorized primary can advance prematurely, sign permitted content and cause denial of service. There is no chain-validator, trusted-clock, non-equivocation or deployment-wide forward-security claim.
+
+## Durable transaction and recovery protocol
+
+Each secret bank has an authenticated versioned header/body, dedicated COMMIT page and dedicated CLEAN page. Authenticate revision, parent revision, slot, pool/incarnation and object references; never trust a bare flash generation number. Each page is programmed once after erase.
+
+1. Serialize pool mutation; create candidate in bounded zeroizing RAM. Read-verify referenced public objects first.
+2. Erase/read-verify inactive bank if necessary. Program candidate with fresh AEAD nonce; read back, authenticate and validate full decoded invariants.
+3. Write/read-verify authenticated COMMIT marker. This is the durable successor point, not permission to acknowledge.
+4. Erase/read-verify obsolete bank, invalidate relevant XIP/cache lines, wipe obsolete RAM/cache. Write/read-verify authenticated CLEAN marker.
+5. Only now return success or a signature using successor state. Do not start another mutation before cleanup completes.
+
+Recovery before serving: authenticated successor COMMIT without CLEAN requires predecessor cleanup and CLEAN completion even if the predecessor was torn during erase. A CLEAN predecessor plus an incomplete uncommitted candidate may discard that candidate. Two committed valid banks require consecutive revision/parent agreement; choose successor and clean predecessor. A corrupt apparently committed successor, ambiguous marker ordering, invalid object digest or missing authoritative bank quarantines rather than falling back. Interrupted CLEAN-page programming is retried only under the flash part's qualified program rules; otherwise recreate the same successor in an erased bank without acknowledging or exposing old state, with a recovery state machine covered by fault injection. Implementation must prove every reachable marker combination under the supported flash tear model.
+
+Deletion is journaled before directory tombstone publication; recovery reconciles directory and slot incarnations and completes both sides before reuse. Management sequence is durably advanced with the authorized operation, or directory records pending intent that is completed idempotently; no acknowledgement between independently inconsistent records. Device retirement commits a global deny state before clearing slots.
+
+Public-only orphan objects may be reclaimed after authenticated authoritative references are known. Retained referenced backups are never regenerated to repair missing bytes. Signing, status and backup retrieval never mutate lifecycle merely for telemetry.
+
+## Host consistency and retention
+
+The daemon persists only public descriptors, encrypted artifacts, request IDs and configured credentials. Device state is authoritative; stale host files cannot roll it back. Generation number plus creation request ID permits recovery of a lost acknowledgement even after other mutations. Reused request ID with changed payload conflicts; an old generation number whose artifact has been reclaimed returns `RESULT_RECLAIMED`, never a new key. Generic mutations use revision compare-and-swap and durable last-operation identity; an uncertain older result requires status reconciliation rather than blind replay.
+
+Keep certificate/VK/artifact output manifests crash-recoverable. Files individually use atomic publication; the CLI reports success only after all outputs and a public completion manifest are durable. A partial host publication is repaired from the same committed generation, never by regenerating its secret. Device-held encrypted artifacts are a bounded retention window, not the operator's long-term archive.
