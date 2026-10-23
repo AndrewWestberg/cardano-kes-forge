@@ -44,53 +44,112 @@ cargo run --locked -p xtask -- gate cognitive-complexity --evidence "$EVIDENCE"
 
 G12 requires the implementation's repository-root `clippy.toml` to pin `cognitive-complexity-threshold = 25`. Its runner binds `CLIPPY_CONF_DIR` to that root and checks the complete host, firmware, maintained KES adaptation and separately built Rust-tooling target/feature matrix; the default-member Clippy command above alone is insufficient. Confirm an above-threshold disposable function fails with the expected lint, a boundary case passes, and local suppression is rejected. This allow-by-default restriction lint needs explicit enforcement and is only a code-complexity guardrail, not proof of human comprehension or a replacement for review/operator trials.
 
-## 3. Provision and establish security mode
+## 3. Clean-install public inputs and attended provisioning
 
-Inspect without mutation:
+This bootstrap is independent of `xtask fixture`: start from empty owner-only directories and installed planned production binaries. Install the primary profile on the service host, management profile on the offline management workstation, provisioning profile on the isolated attended provisioning workstation and recovery profile on the separate recovery workstation. The primary profile must not expose authority-signing, provisioning or recipient-private workflows. One physical operator can hold several roles, but host location is procedure/OS custody, not cryptographically provable.
 
-```sh
-kes-forge provision inspect --usb-device "$USB_DEVICE" --out-file "$INSPECTION"
-kes-forge provision prepare --manifest "$PROVISIONING_MANIFEST"
-```
-
-The manifest is produced/reviewed from the hardware-specific policy in [security.md](contracts/security.md). Confirm silicon, flash, firmware/boot keys, required locks and fresh trust material. Only the explicitly attended provisioning ceremony may run:
-
-```sh
-kes-forge provision apply --manifest "$PROVISIONING_MANIFEST" --authorize-irreversible
-```
-
-Expected: verified trusted readback and signed provisioning evidence; all required negative checks pass before release-ready. Incomplete/unlocked/development evidence blocks production generation/signing. Development fixtures instead use disposable development firmware, explicit `--allow-development`, and no irreversible locks. Test current-state inspection before/after evolution and reboot with restricted output; repeat the attempted interface/debug access on release hardware and require rejection. Never promote an inspected key to release.
-
-## 4. Recipient lifecycle on backup workstation
-
-Run only on the separate backup/recovery system:
-
-```sh
-kes-forge recipient create --public-key-file recipient.pub --private-key-file recipient.key
-```
-
-Enter and confirm a non-empty long unique passphrase at the hidden terminal prompt. Archive the protected private key and separately secure its unlocking credentials. Transfer only `recipient.pub` to the management-enrollment workflow. Do not use the existing scripts' password argv/environment/display patterns.
-
-On the primary, prepare a pool enrollment action containing the cold public key, network binding, recipient public key, machine public key and expected directory sequence/revision. Offline management signs it; the authorized host submits it:
-
-```sh
-kes-forge management prepare --device-config "$DEVICE_CONFIG" --action enroll --payload "$ENROLLMENT" --out-file "$UNSIGNED_REQUEST"
-```
+On each workstation set `umask 077` and disable core dumps. Create primary machine credentials as the daemon service UID in its private `0700` credential directory. Node/operator callers may use separate UIDs explicitly mapped to their connections; they read only public configuration/evidence, never private credentials. Paths below are explicit local files in the responsible workstation's directory; transfers are authenticated **public files only**. Choose `DEVICE_ID` and `INCARNATION_ID` with separate `openssl rand -hex 16` invocations and retain their public values for the ceremony/enrollment. Choose the pool ID by decoding the conventional cold VK and taking BLAKE2b-224 (the enrollment builder checks it); do not use a pool label or slot number.
 
 On the offline management workstation:
 
 ```sh
-kes-forge management sign --request "$UNSIGNED_REQUEST" --management-key "$MANAGEMENT_KEY_FILE" --out-file "$AUTHORIZATION"
+kes-forge authority key-create --role management --public-key-file management.pub.json --private-key-file management.key.json
 ```
 
-On the primary:
+Transfer only `management.pub.json` to provisioning. On recovery:
 
 ```sh
-kes-forge management apply --device-config "$DEVICE_CONFIG" --authorization "$AUTHORIZATION"
-kes-forged --config "$DAEMON_CONFIG"
+kes-forge recipient create --public-key-file recipient.pub.json --private-key-file recipient.key
 ```
 
-Run the daemon in its service session; validate its Unix socket ownership/ACLs and configured connection mapping. Repeat enrollment for the required test pools. Pool cold/VRF handling and external on-chain registration remain conventional; no recipient private key/passphrase goes to the daemon or Pico.
+Enter/confirm the hidden non-empty passphrase; archive the protected key and separately secure its unlocking credentials. Transfer only recipient public JSON to enrollment. Recovery private key/password never go to the Pico, management or primary.
+
+On primary create the machine management-transport key, using the ceremony's agreed device ID:
+
+```sh
+mkdir -m 700 private
+kes-forge credential create --device-id "$DEVICE_ID" --scope management --credential-epoch 0 \
+  --public-key-file transport.pub.json --private-key-file private/transport.key.json
+```
+
+Transfer only `transport.pub.json` to provisioning. On the isolated provisioning workstation:
+
+```sh
+kes-forge authority key-create --role provisioning-reviewer --public-key-file reviewer.pub.json --private-key-file reviewer.key.json
+kes-forge provision inspect --usb-device "$USB_DEVICE" --out-file inspection.json
+```
+
+Obtain the approved hardware-specific policy/recipe, authorized signed release firmware, partition manifest and boot-key fingerprint from the reviewed release workflow. They are prerequisites, not generated from inspection or accepted from an unknown device. Pin vendor manuals, supported silicon and picotool 2.3.1 executable hash as required by [security.md](contracts/security.md). In an editor create `provisioning.draft.json` with **every** ProvisioningManifest field and exact reviewed steps from that contract, signature null, references to these local public files, management/transport/reviewer public handoffs and exact SHA-256 digests. Select a fresh ceremony ID. No production root/private key literal belongs in it. Missing approved recipe/image/key or unsupported silicon blocks here rather than triggering automatic boot trust.
+
+Explicitly set `managementPublicKeyDigest`, `managementTransportPublicKeyDigest` and `reviewerPublicKeyDigest` to SHA-256 of the exact transferred public-key file bytes. Review these content hashes along with their paths; prepare/apply must reject substituted key files. Manifest/record signatures use the contract's exact typed deterministic-CBOR conversion, never a floating-point JSON canonicalization.
+
+```sh
+kes-forge provision prepare --manifest provisioning.draft.json --review-key reviewer.key.json --out-file provisioning.approved.json
+kes-forge provision apply --manifest provisioning.approved.json \
+  --reviewer-public-key-file reviewer.pub.json --review-key reviewer.key.json \
+  --out-file provisioning.record.json --authorize-irreversible
+```
+
+Review the entire signed before/after irreversible plan before apply. Expected: trusted readback and required negative checks, fresh device-generated root/identity/HPKE keys and a completed signed record. Incomplete evidence is not release-ready. Preserve the signed manifest, policy/recipe/image provenance and record; authenticate the reviewer public fingerprint out of band. Construct `device.identity.json` from the record's public fields and exact DeviceIdentity schema, with record/reviewer file references. Transfer this pin, reviewer public file, record and public evidence dependencies to primary and recovery; compare all bindings and fingerprint through the attended handoff, never learn a key from unauthenticated INFO. Keep reviewer private key on provisioning and management private key offline. Development fixtures instead use disposable firmware/trust, `isolated-development` policy and explicit `--allow-development`, never irreversible release locks or promoted inspected KES keys.
+
+## 4. Start daemon, enroll and connect a pool
+
+Use an editor on primary to create the exact closed `DeviceConfig` from [CLI bootstrap schemas](contracts/cli-backup.md#versioned-bootstrap-files), for example:
+
+```json
+{"version":1,"socketPath":"kes-forged.sock","deviceId":"<ceremony 32 lowercase hex>","deviceIdentityFile":"device.identity.json","connectionName":"management","credentialFile":"private/transport.key.json","credentialEpoch":0,"securityPolicy":"release-required"}
+```
+
+Substitute the actual device ID; angle-bracket text is explanatory, not an accepted value. Save as `device.json`. Create `daemon.json` (substitute actual stable USB selector and numeric service UID):
+
+```json
+{"version":1,"socketPath":"kes-forged.sock","usbDevice":"<stable USB selector>","deviceConfigFile":"device.json","poolConnectionFiles":[],"allowedPeerUids":[{"uid":1000,"connections":["management"]}]}
+```
+
+All relative file/socket references resolve from the containing file. Keep public configurations/evidence in a trusted-owner directory readable/searchable by intended caller UIDs with no untrusted writes. Store private credentials separately under the daemon UID: regular `0600` files in `0700` directories; point credentialFile references to those daemon-only paths (for example `private/transport.key.json` and `private/pool-machine.key.json` after placing the created files there under daemon custody). Public file readability never grants credential access. Actual service UID replaces 1000; initially only it maps to management. Configure socket/directory ACLs for explicitly authorized client UIDs when adding pool mappings. Start the daemon **before** management prepare/apply, in its own service session:
+
+```sh
+kes-forged --config daemon.json
+```
+
+Verify pinned release evidence and protected Unix socket access; no pool registration is required to open the provisioned management transport. In a second service-UID session set `DEVICE_CONFIG` to this directory's `device.json`. Obtain the existing conventional cold public envelope and exact enrolled Shelley genesis bytes from the cold/network workflows; keep cold/VRF secrets under their existing custody. Set `POOL_ID` to the cold-key hash, `NETWORK_MAGIC` to the agreed network magic and `INCARNATION_ID` to the newly selected ID. Create the pool machine key as the daemon UID and public enrollment payload on primary:
+
+```sh
+"$CARDANO_CLI" conway stake-pool id --cold-verification-key-file "$COLD_VKEY" --output-format hex
+```
+
+Use that public hex output as `POOL_ID`; the ordinary Cardano CLI is the existing public pool-identity creation path, not an extra KES secret generator.
+
+```sh
+kes-forge credential create --device-id "$DEVICE_ID" --scope pool --pool-id "$POOL_ID" \
+  --incarnation-id "$INCARNATION_ID" --credential-epoch 0 \
+  --public-key-file pool-machine.pub.json --private-key-file private/pool-machine.key.json
+kes-forge management enrollment-create --device-config "$DEVICE_CONFIG" \
+  --cold-verification-key-file "$COLD_VKEY" --shelley-genesis "$SHELLEY_GENESIS" \
+  --network-magic "$NETWORK_MAGIC" --recipient-public-key-file recipient.pub.json \
+  --machine-public-key-file pool-machine.pub.json --incarnation-id "$INCARNATION_ID" --out-file enrollment.json
+kes-forge management prepare --device-config "$DEVICE_CONFIG" --action enroll --payload enrollment.json --out-file enrollment.request.json
+```
+
+Transfer public request and approved public enrollment inputs to offline management; compare device, cold hash, incarnation, network, machine/recipient keys, expected revision and sequence before signing:
+
+```sh
+kes-forge management sign --request enrollment.request.json --management-key management.key.json --out-file enrollment.authorization.json
+```
+
+Transfer only signed authorization back to primary:
+
+```sh
+kes-forge management apply --device-config "$DEVICE_CONFIG" --authorization enrollment.authorization.json
+```
+
+Require a validated durable enrollment response. Construct `pool.connection.json` with **all** existing PoolConnection fields: version 1, same socket/device/pin, enrolled pool/incarnation/networkBinding, unique `connectionName="pool-1"`, credentialFile referencing the daemon-owned private pool-machine file and `securityPolicy="release-required"`. Copy networkBinding from the validated enrollment payload, not manual network-time guesses. Add this file to daemon.json's `poolConnectionFiles` and explicit intended node/operator UID mappings in `allowedPeerUids`, each with `connections:["pool-1"]` (combine permitted connection names in one record if a UID already exists). Keep management mapped only to intended management callers; no wildcard or socket-only authorization. Grant those callers read/search access to public files and socket ACL access, not private files/directories. Stop/restart the daemon service (in its service session, normal termination then the same `kes-forged --config daemon.json` command). This static mapping change does not re-enroll or authorize a key. Set `POOL_CONNECTION` to the file and run as an explicitly mapped pool caller:
+
+```sh
+kes-forge status --connection "$POOL_CONNECTION" --json
+```
+
+Expected: authenticated pool registration, no active generation, no fabricated remaining validity or latency samples after restart. Repeat the same enrollment/mapping procedure for additional test pools, maximum 32. Cold/VRF/on-chain registration remain conventional and no offline authority/recipient secret goes to daemon or Pico. This completes clean-install bootstrap through actual daemon startup and enrollment; generation follows below.
 
 ## 5. Generate on device, issue certificate, recover backup
 
@@ -158,6 +217,14 @@ kes-forge schedule --connection "$POOL_CONNECTION" --generation "$REPLACEMENT_GE
 Restart device and daemon between scheduling and eligible period. Expected: same durable intent/certificate, automatic activation on authenticated period observation, no extra approval, no reset to stale host state, zero signer-caused missed opportunities for unaffected pools. Second staged generation conflicts. Old/stale-generation responses cannot replace active context.
 
 Telemetry scenarios must include two period transitions, staged vs active context, hot rotation, final valid period/expiry, device power cycle, disconnect/reconnect, failed evolution and lost ACK. Independent expectations use certificate/network/time for public validity and confirmed evolution for key-state fields. Preserve names, historical log mappings, zero error sentinels, cadence and legacy aggregation; no telemetry-triggered device mutation. The unmodified `"$CARDANO_CLI" conway query kes-period-info` still works from public certificate/network context while Pico is unavailable.
+
+For host-only diagnostics, capture `kes-forge status --connection "$POOL_CONNECTION" --json` before any completed operation after daemon restart: every `latency` entry must be `{state:"unavailable",sample:null}`. After a validated SIGN or GET_BACKUP, check only its operation entry changes and that admission-to-validation duration includes host queue/USB/verification, rounded up in ms. GENERATE's sample covers the initial IN_PROGRESS acknowledgement, not asynchronous completion. Repeated status/OP_STATUS reads must preserve sample requestId, observedAt and duration while age increases.
+
+With USB/session kept live, pause operational node period observations on the controlled fixture while continuing status reads. At ages <30000ms joined status may be fresh; at **>=30000ms** either confirmed/node-period age makes it stale, `ready=null` and remaining validity null even if STATUS keeps refreshing confirmed device facts. Unavailable joins likewise report readiness null, not false; only a fresh/current join computes boolean readiness from security/lifetime/health. Advance only wall clock and require no freshness extension. A queried latency entry likewise becomes stale at completion age >=30000ms, retaining the original sample. Exercise the exact boundary in the host fake-monotonic-clock tests; physical exercises must not claim millisecond scheduling precision. Resume a matching operational node observation to re-establish the join.
+
+Induce a real admitted request's terminal deadline/USB failure on disposable fixtures. Require its last-completed latency sample outcome `error`, stable `DEADLINE_EXCEEDED`/`DEVICE_UNAVAILABLE` code and bounded duration; no in-progress/requested mutation is confirmed state. Disconnect immediately makes readiness unavailable; an error sample may still display without implying readiness. Session replacement/reboot/daemon restart resets latency samples to unavailable/null and invalidates old readiness; active rotation requires newly matching confirmed and node-period observations, not old-generation replies. Do not alter native KES telemetry/error sentinels to satisfy these separate status exercises. Qualification reports must distinguish unavailable diagnostics from successful hardware measurements.
+
+Query management scope with `kes-forge status --device-config "$DEVICE_CONFIG" --json` as its explicitly mapped caller. Require null `observation`, `ready`, `remainingValidityPeriods` and `latency` rather than borrowing any pool's diagnostics; device security/directory facts remain separate.
 
 ## 7. Capacity, persistence, security and custody failures
 

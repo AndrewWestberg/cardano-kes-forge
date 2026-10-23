@@ -9,7 +9,7 @@
 
 ## Content Quality
 
-- [ ] No implementation details (languages, frameworks, APIs)
+- [x] No unmandated implementation choices. Explicit user-mandated technology, platform, interface, and compatibility constraints are identified and justified; other implementation decisions are deferred to the plan.
 - [x] Focused on user value and business needs
 - [x] Written for non-technical stakeholders
 - [x] All mandatory sections completed
@@ -30,7 +30,7 @@
 - [x] All functional requirements have clear acceptance criteria
 - [x] User scenarios cover primary flows
 - [x] Feature meets measurable outcomes defined in Success Criteria
-- [x] No implementation details leak into specification
+- [x] No unmandated implementation choices leak into specification; explicitly required technical constraints are distinguished from planning decisions.
 
 ## Notes
 
@@ -38,8 +38,8 @@
 - Review iteration 1: all 16 requirements-quality criteria pass; no unresolved clarification markers or corrective findings.
 - Content evidence: the opening explains KES and operator value; five prioritized stories cover generation, signing, evolution, rotation, and retirement. Mandatory template sections retain their order.
 - Scope evidence: Assumptions states, "The platform covers device operation, operator management, and the host-side integration needed by cardano-node." Explicit exclusions and recovery tradeoffs bound the feature.
-- Design independence: the requested Pico 2 and Cardano compatibility are product constraints, not selected implementation techniques. Assumptions states, "The exact transport, interaction surface, and internal design are planning decisions, not prescribed here." The existing constitution's quality gate is referenced without selecting tooling.
-- Acceptance evidence: FR-001 through FR-019 link to observable scenarios or success criteria. SC-001 through SC-006 define operator completion, accepted blocks, request deadlines, prohibited security outcomes, interruption safety, and rotation outcomes with numeric thresholds.
+- Design independence: user-mandated Rust, Pico 2, `kes-forge key-gen-KES`, Cardano compatibility, and the pinned unmodified Cardano CLI baseline are explicit constraints, not unrequested implementation choices. Assumptions leaves transport, other interaction details, and internal design to planning. User approval confirmed the revised criterion and checked status; this does not establish implementation correctness or hardware feasibility.
+- Acceptance evidence: FR-001 through FR-032 link to observable scenarios or success criteria. SC-001 through SC-012 define operator workflows, accepted blocks, request deadlines, prohibited security outcomes, interruption safety, rotation, backup-recipient lifecycle, security-mode qualification, mixed-source bulk operation, and telemetry compatibility.
 - Security evidence: host compromise, physical exposure, rollback, destructive operations, and lost-device limitations are explicit. Assumptions states, "the board choice alone proves no security property." Hardware feasibility and node integration remain planning obligations, not verified claims.
 - Structural validation passed: template section order, placeholder absence, five complete story structures, sequential requirement and outcome identifiers, checklist link resolution, and active-feature configuration.
 - No extension hooks file was present in either pre- or post-specification checks.

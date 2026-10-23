@@ -4,7 +4,7 @@
 
 **Input**: `specs/001-device-kes-management/spec.md`
 
-**Planning status**: Phase 0 research and Phase 1 design complete. No implementation, hardware provisioning, production-security qualification or public-network acceptance is claimed. This command does not create `tasks.md`.
+**Planning status**: Design and task-plan remediations are documented; `tasks.md` is the implementation backlog. No application implementation, hardware provisioning, production-security qualification or public-network acceptance is claimed. Gate definitions and newly explicit applicability remain proposed until maintainer approval and sensitivity proof.
 
 ## Summary
 
@@ -31,6 +31,10 @@ Provide device-only generation as `kes-forge key-gen-KES` in the Rust operator C
 **Performance Goals**: SC-003: ≥ 99% of 10,000 warm single-pool requests ≤ 100 ms; every valid request in 10,000 synchronized 32-pool rounds ≤ 500 ms including queueing/evolution/activation/transport/independent verification. Overload ≤ 500 ms; authorized status ≤ 2 s. Qualify all 32 active + 32 staged and separate background-generation workload with one staged slot vacant, including midpoint evolution.
 
 **Constraints**: No device-backed KES plaintext on primary; encrypted backup only at generation; password/private recipient key only on recovery host; no import/fallback; remove obsolete device secret before ACK/new-period signature. Max. 4096-byte message / 8192-byte frame, bounded queues/workspaces. Target 256 KiB KES-owned RAM and ≥ 32 KiB measured free SRAM after complete firmware/stacks. Same-host credentials do not provide protection after all are stolen. Backups intentionally weaken deployment-wide forward security.
+
+**Admission and RAM ownership**: The daemon retains at most 32 admitted signing bodies plus bounded lifecycle/status/management lanes; device execution is single-flight with one nonsecure receive, one secure request and one response buffer (8192 bytes each). Service admission precedes USB queueing; dispatch forwards only the remaining original budget, and native independent verification remains inside the original deadline. Research R4 accounts all 262144 KES-owned bytes, including sessions, hot metadata, crypto/journal workspace, both stacks and margin; cold metadata/staged state are loaded on demand. Prove the layout with maximum 4096-byte requests and full/background-generation workloads, not nominal messages.
+
+**Bootstrap and operator diagnostics**: CLI/security contracts define versioned authority-specific key/configuration/provisioning schemas and the supported clean-install ceremony. Offline management/firmware/ceremony authority and recipient private custody stay off the primary; daemon credentials confer only their configured pool/transport authority. Host readiness joins require matching confirmed device and operational node-period observations, both younger than the fixed 30000-ms monotonic-age limit; disconnect/context changes invalidate immediately. Runtime latency retains one last-completed record per pool per eight fixed operations, never message bodies; status reads do not refresh observations or samples. These operator diagnostics do not replace or change native KES telemetry.
 
 **Scale/Scope**: FR-001–FR-032 and SC-001–SC-012, including one actual mixed bulk node, 32 simultaneous active + staged pools, 1,000 physical power cuts, 100 consecutive controlled production opportunities, preview/preprod trials and representative operators. No acceptance target is reduced based on prototype results.
 
@@ -70,7 +74,7 @@ specs/001-device-kes-management/
     └── quality-gates.md
 ```
 
-`tasks.md` belongs to the subsequent task-generation workflow and is intentionally not generated now. Existing `checklists/` is left unchanged.
+[`tasks.md`](tasks.md) is the current implementation backlog generated from this plan. Its task and checkpoint status does not imply implemented behavior or passing qualification evidence. Existing `checklists/` is left unchanged.
 
 ### Source code (planned repository layout)
 
@@ -127,7 +131,11 @@ Research-agent dispatch failed due provider authentication; direct research comp
 
 The data model defines device/pool/generation/credential/recipient/certificate/intent/observation identities, state transitions, counter/replay validation, flash commit/cleanup and host reconciliation. Contracts cover external device/local service, operator/CLI/backup files, native node/bulk/telemetry, release security and evidence gates. Quickstart is a validation/run guide, not implementation code.
 
-Implementation should establish independent crypto/file oracles and tool sensitivity, then the no_std adaptation and fault-testable journal. **Measure the full-capacity physical evolution/erase/sign path early:** 32 sector cleanups may defeat 500 ms even when storage fits. Only after that feasibility gate, proceed to complete daemon/backup/native integration, hot rotation/telemetry, and full security/operator/public-network qualification. No dependency on copying prototype C/Python/HSM components is introduced. This is dependency ordering for the later tasks command, not an implementation performed by this planning run.
+Implementation establishes independent crypto/file oracles, executable gate/acceptance tooling and applicable sensitivity probes, then the no_std adaptation and fault-testable journal. Introduce semantic fuzz/property targets with their earliest consuming parsers/transitions, not after story acceptance. **Measure the full-capacity physical evolution/erase/sign path early:** 32 sector cleanups may defeat 500 ms even when storage fits; all host queue time and maximum-size bodies count. Only after that feasibility and applicable increment gates pass, proceed to complete daemon/backup/native integration and rotation/telemetry. Each foundation/story checkpoint requires the quality contract's approved applicability matrix and passing candidate-bound readings; future unimplemented behavior is explicitly not passed, and no release-only exemption bypasses code acceptance.
+
+Each G8/P1 subcampaign's executable runner, scenario inventory and sensitivity proof MUST exist before the first checkpoint requiring that subcampaign. Foundation T022 establishes reusable physical-cut and load runners before T024; US1 T047 and US2 T066 extend them for their actual service paths before T052 and T068. Later phases expand coverage rather than supply prerequisites retrospectively. Approved nonempty incremental workloads retain unchanged timing bounds; final 10,000-request/10,000-round and 1,000-cut campaigns remain mandatory.
+
+Before final qualification, finish every runner, validator, package, contract/runbook change and sensitivity probe, then freeze candidate/source/dependency/tool/gate/approval identities. All final tasks execute frozen code and collect evidence; they do not introduce new runners. No cross-candidate evidence reuse is allowed. Changing any frozen input invalidates the bundle and requires a newly frozen candidate with complete required readings. Fixed source-digest exclusions cover only approved generated build/evidence/runtime-fixture outputs, never project source or qualification tooling. Full security, operator and actual public-network campaigns retain original thresholds. No dependency on copying prototype C/Python/HSM components is introduced.
 
 ## Requirement-to-design traceability
 

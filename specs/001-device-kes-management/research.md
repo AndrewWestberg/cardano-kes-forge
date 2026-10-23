@@ -49,9 +49,28 @@ For entropy, use only health-checked RP2350 TRNG samples for credited entropy; r
 
 Proposed flash budget (design ceilings, not measured usage): 64 KiB boot/partition area + two 1 MiB signed firmware slots + 16 KiB directory + 32 × 32 KiB pool regions = 3152 KiB, leaving 944 KiB of a detected 4 MiB board. A pool region allocates two 4 KiB secret banks, two 8 KiB public/artifact objects and 8 KiB reserved. Every secret snapshot must fit within 3584 bytes including authentication overhead, leaving separate 256-byte COMMIT and CLEAN pages. No format may spill into another pool. Keep certificate/replay tombstones in the directory after deletion; bounded directory exhaustion fails enrollment rather than losing history. Directory compaction may remove a tombstone only with explicit management authorization binding a new incarnation and preserved high-water marks.
 
-Active secret+public tree+64-byte expanded-key caches cost `32 × (608 + 4064 + 64) = 151552` bytes. A 256 KiB KES-owned RAM ceiling leaves 110592 bytes for metadata, sessions, queues and shared workspaces; staged trees/secrets are loaded on demand. Require at least 32 KiB measured free SRAM after complete firmware, both stacks and peak workload. Firmware code-size and all 64 retained objects must fit actual link/flash measurements. Public cache acceleration is part of the dependency adaptation, not proof that current crate code meets timing.
+The original active-cache allocation alone costs `32 × (608 + 4064 + 64) = 151552` bytes. Keeping another 32×4096-byte message bodies on the device would exceed the 256-KiB ceiling before other state. **Decision:** retain service-admitted bodies on the daemon, dispatch one device operation at a time, and parse exact signing bytes in the single secure frame copy. The 32-pool admission guarantee remains service-wide; host queue time remains inside the original deadline. Staged trees/secrets and cold certificate/registration data are loaded into shared workspace on demand, not duplicated for every pool.
 
-**Critical feasibility gate:** 32 obsolete-sector erases plus cryptography/USB at an aligned period transition may exceed 500 ms. Measure this first on stock hardware, including 31→32, flash stalls and signature verification. Do not assume asynchronous APIs make synchronous erase latency disappear. Failure blocks this 32-pool design; capacity, erasure ordering and deadlines may change only with an explicit user-approved requirement/hardware decision. Identify the fitted flash and its minimum endurance; project wear from supported network periods and routine rotation, not an invented generic endurance number.
+Proposed peak KES-owned SRAM ceilings (bytes, not measured usage):
+
+| Resident allocation | Bytes |
+|---|---:|
+| 32 active secret/public-tree/expanded-key caches | 151552 |
+| One nonsecure receive + one secure request + one response frame, 8192 each | 24576 |
+| 33 session records, at most 256 each | 8448 |
+| 32 hot pool records, at most 256 each; cold metadata remains authenticated in flash | 8192 |
+| Dispatch/operation metadata | 4096 |
+| Shared crypto/generation/staged-load workspace, including transient HPKE | 32768 |
+| Shared journal candidate/authentication workspace | 8192 |
+| Combined KES stack allowance across both cores | 16384 |
+| Unallocated KES margin | 7936 |
+| **Total ceiling** | **262144** |
+
+No allocation is hidden outside this ledger merely by placing it in nonsecure RAM. Account alignment, DMA descriptors and interrupt stack peaks within the listed ceilings; the complete firmware's non-KES USB/runtime allocation is reported separately and still counts against 520 KiB physical SRAM. Assert fixed buffer capacities at compile time, record linker/static sizes and measured stack/workspace high-water marks, and require at least 32 KiB measured free SRAM after complete firmware and peak workload. Exceeding any proposed component ceiling requires an explicitly reviewed rebalance inside the unchanged total, not an unchecked spill or threshold increase.
+
+Host storage is separately bounded: at most 32 signing, 32 lifecycle, 32 status and one management frame, each <=8192 bytes (794624 bytes of queued payload capacity), plus at most 64 socket-peer receive frames of 8192 bytes (524288 bytes), and fixed metadata/session/diagnostic records. A queue slot includes its in-flight request until terminal completion; each peer has one incomplete frame with 2-second expiry and excess peers are refused without allocating another buffer. Exact body bytes stay on the host until dispatch; no prehash substitution, double secure-body copy or per-pool device frame cache. Public cache acceleration remains part of the dependency adaptation, not proof that the current crate meets timing. Firmware code-size and all 64 retained objects must also fit actual link/flash measurements.
+
+**Critical feasibility gate:** 32 obsolete-sector erases plus cryptography/USB at an aligned period transition may exceed 500 ms. Measure this first on stock hardware, including 31→32, flash stalls, 32 simultaneous maximum-4096-byte service-admitted signing messages and independent verification. Record admission/dispatch/completion timestamps separately; no reset when a body leaves the host queue. Exercise all-active/all-staged and separate background-generation peak memory layouts. Do not assume asynchronous APIs make synchronous erase latency disappear. Failure blocks this 32-pool design; capacity, erasure ordering and deadlines may change only with an explicit user-approved requirement/hardware decision. Identify the fitted flash and its minimum endurance; project wear from supported network periods and routine rotation, not an invented generic endurance number.
 
 **Alternatives considered:** Append-only secret logs retain obsolete material. Erasing before commit loses acknowledged state. Acknowledging before cleanup violates forward-erasure semantics. Battery/secure-element additions or lowered capacity are not authorized. Physical flash substitution/invasive extraction is outside scope, but host-accessible rollback and ordinary power loss are not.
 
