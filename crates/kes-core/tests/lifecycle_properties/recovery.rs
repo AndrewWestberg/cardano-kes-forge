@@ -6,7 +6,7 @@ use kes_core::{
     certificate::CertificateError,
     crypto::{CryptoError, Generation, KesKey, PublicTreeBuffer},
     journal::JournalLayout,
-    state::{GenerationSpec, KESGeneration, Lifecycle, PublicObject, StateError},
+    state::{GenerationSpec, KESGeneration, Lifecycle, PublicObject, PublicObjectRef, StateError},
     types::{
         AbsolutePeriod, GenerationId, GenerationNumber, KesLifetime, RelativePeriod, RequestId,
         Revision,
@@ -26,8 +26,7 @@ pub(super) struct RecoveryCounts {
     pub staged_survived_expiry: u64,
 }
 
-pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
-    let mut fixture = Fixture::new();
+fn activate_and_evolve_to_final(mut fixture: Fixture) -> (Fixture, PublicObjectRef, [u8; 32]) {
     let public_reference = *fixture
         .durable
         .state()
@@ -163,6 +162,11 @@ pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
             CryptoError::StalePeriod
         )))
     );
+    (fixture, public_reference, verification_key)
+}
+
+fn reconcile_final_period(mut fixture: Fixture, verification_key: &[u8; 32]) -> Fixture {
+    let verified_tree = fixture.tree.verify(verification_key).unwrap();
 
     drop(fixture.durable);
     let recovered = fixture
@@ -214,6 +218,15 @@ pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
         .unwrap();
     assert!(!replayed.committed_write);
 
+    fixture
+}
+
+fn stage_replacement_and_expire(
+    mut fixture: Fixture,
+    public_reference: &PublicObjectRef,
+    verification_key: &[u8; 32],
+) -> (Fixture, GenerationId, PublicObjectRef) {
+    let verified_tree = fixture.tree.verify(verification_key).unwrap();
     drop(fixture.durable);
     let mut recovered = fixture
         .journal
@@ -315,12 +328,22 @@ pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
     let state = fixture.durable.state().unwrap();
     let current = state.current().unwrap();
     assert!(current.is_secret_erased());
-    assert_eq!(current.public_object_ref(), &public_reference);
-    assert_eq!(current.verification_key(), &verification_key);
+    assert_eq!(current.public_object_ref(), public_reference);
+    assert_eq!(current.verification_key(), verification_key);
     let staged = state.staged().unwrap();
     assert_eq!(staged.id(), replacement_id);
     assert_eq!(staged.public_object_ref(), &replacement_reference);
     assert!(!staged.is_secret_erased());
+    (fixture, replacement_id, replacement_reference)
+}
+
+fn assert_expired_recovery(
+    mut fixture: Fixture,
+    verification_key: &[u8; 32],
+    replacement_id: GenerationId,
+    replacement_reference: &PublicObjectRef,
+) {
+    let verified_tree = fixture.tree.verify(verification_key).unwrap();
 
     drop(fixture.durable);
     let recovered = fixture
@@ -361,8 +384,22 @@ pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
     assert!(recovered_state.current().unwrap().is_secret_erased());
     let recovered_staged = recovered_state.staged().unwrap();
     assert_eq!(recovered_staged.id(), replacement_id);
-    assert_eq!(recovered_staged.public_object_ref(), &replacement_reference);
+    assert_eq!(recovered_staged.public_object_ref(), replacement_reference);
     assert!(!recovered_staged.is_secret_erased());
+}
+
+pub(super) fn exercise_recovery_transitions() -> RecoveryCounts {
+    let fixture = Fixture::new();
+    let (fixture, public_reference, verification_key) = activate_and_evolve_to_final(fixture);
+    let fixture = reconcile_final_period(fixture, &verification_key);
+    let (fixture, replacement_id, replacement_reference) =
+        stage_replacement_and_expire(fixture, &public_reference, &verification_key);
+    assert_expired_recovery(
+        fixture,
+        &verification_key,
+        replacement_id,
+        &replacement_reference,
+    );
     RecoveryCounts {
         first_activation: 1,
         period_skip: 1,

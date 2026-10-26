@@ -1,7 +1,7 @@
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::cbor::{Encoder, Value};
 use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
-use kes_core::directory::{self, EnrollmentOutcome};
+use kes_core::directory;
 use kes_core::generation::{Admission, GenerationCoordinator, GenerationRequest, OperationStatus};
 use kes_core::journal::{DirectoryCodec, JournalContext, JournalScope, PoolCodec, SnapshotCodec};
 use kes_core::management::{self, Action, Error as ManagementError, SigningFields, Target};
@@ -224,17 +224,11 @@ fn signed_enrollment_binds_all_keys_and_exact_replay_returns_recorded_outcome() 
         &management.verifying_key().to_bytes(),
     )
     .unwrap();
-    let (slot, pool) = match directory::enroll(&mut device, None, &verified).unwrap() {
-        EnrollmentOutcome::Applied {
-            slot,
-            directory_revision,
-            pool,
-        } => {
-            assert_eq!(directory_revision, Revision::new(1));
-            (slot, pool)
-        }
-        EnrollmentOutcome::AlreadyCommitted { .. } => panic!("fresh enrollment replayed"),
-    };
+    let outcome = directory::enroll(&mut device, None, &verified).unwrap();
+    assert!(outcome.is_applied());
+    assert_eq!(outcome.directory_revision, Revision::new(1));
+    let slot = outcome.slot;
+    let pool = outcome.into_pool().expect("fresh enrollment returns pool");
     assert_eq!(pool.credential_public_key(), &[5; 32]);
     assert_eq!(
         pool.recipient_id(),
@@ -281,18 +275,11 @@ fn signed_enrollment_binds_all_keys_and_exact_replay_returns_recorded_outcome() 
     let recovered =
         DirectoryCodec::decode(&directory_bytes[..directory_length], directory_context).unwrap();
     device = Device::from_authenticated_snapshot(&recovered).unwrap();
-    match directory::enroll(&mut device, Some(&pool), &verified).unwrap() {
-        EnrollmentOutcome::AlreadyCommitted {
-            slot: replay_slot,
-            pool_revision,
-            directory_revision,
-        } => {
-            assert_eq!(replay_slot, slot);
-            assert_eq!(pool_revision, Revision::new(0));
-            assert_eq!(directory_revision, Revision::new(1));
-        }
-        EnrollmentOutcome::Applied { .. } => panic!("exact replay enrolled twice"),
-    }
+    let outcome = directory::enroll(&mut device, Some(&pool), &verified).unwrap();
+    assert!(!outcome.is_applied());
+    assert_eq!(outcome.slot, slot);
+    assert_eq!(outcome.pool_revision, Revision::new(0));
+    assert_eq!(outcome.directory_revision, Revision::new(1));
     assert_eq!(device.pool_count(), 1);
 }
 
@@ -309,10 +296,10 @@ fn changed_replay_bad_signature_and_non_management_authority_fail_closed() {
         &management.verifying_key().to_bytes(),
     )
     .unwrap();
-    let pool = match directory::enroll(&mut device, None, &verified).unwrap() {
-        EnrollmentOutcome::Applied { pool, .. } => pool,
-        EnrollmentOutcome::AlreadyCommitted { .. } => panic!("fresh enrollment replayed"),
-    };
+    let pool = directory::enroll(&mut device, None, &verified)
+        .unwrap()
+        .into_pool()
+        .expect("fresh enrollment returns pool");
 
     let changed = enrollment_envelope(
         &management,
@@ -358,10 +345,11 @@ fn directory_accepts_at_most_thirty_two_live_registrations_without_eviction() {
             &management.verifying_key().to_bytes(),
         )
         .unwrap();
-        match directory::enroll(&mut device, None, &verified).unwrap() {
-            EnrollmentOutcome::Applied { pool, .. } => pools.push(pool),
-            EnrollmentOutcome::AlreadyCommitted { .. } => panic!("unique enrollment replayed"),
-        }
+        let pool = directory::enroll(&mut device, None, &verified)
+            .unwrap()
+            .into_pool()
+            .expect("unique enrollment returns pool");
+        pools.push(pool);
     }
     assert_eq!(device.pool_count(), 32);
     assert_eq!(device.retained_identity_count(), 32);
@@ -423,10 +411,10 @@ fn recipient_replacement_cancels_unpublished_work_and_preserves_replay_identity(
         &management.verifying_key().to_bytes(),
     )
     .unwrap();
-    let mut pool = match directory::enroll(&mut device, None, &verified).unwrap() {
-        EnrollmentOutcome::Applied { pool, .. } => pool,
-        EnrollmentOutcome::AlreadyCommitted { .. } => panic!("fresh enrollment replayed"),
-    };
+    let mut pool = directory::enroll(&mut device, None, &verified)
+        .unwrap()
+        .into_pool()
+        .expect("fresh enrollment returns pool");
     let old_recipient = *pool.recipient_id();
     let generation_request = RequestId::from_bytes([0xa1; 16]);
     let mut coordinator = GenerationCoordinator::new();
@@ -527,10 +515,10 @@ fn recipient_replacement_is_future_only_and_requires_old_artifact_archival() {
         &management.verifying_key().to_bytes(),
     )
     .unwrap();
-    let mut pool = match directory::enroll(&mut device, None, &verified).unwrap() {
-        EnrollmentOutcome::Applied { pool, .. } => pool,
-        EnrollmentOutcome::AlreadyCommitted { .. } => panic!("fresh enrollment replayed"),
-    };
+    let mut pool = directory::enroll(&mut device, None, &verified)
+        .unwrap()
+        .into_pool()
+        .expect("fresh enrollment returns pool");
     let old_policy = pool.generation_policy();
     let generation = GenerationId::from_bytes([0xc2; 16]);
     let staged = staged_generation(&pool, generation);

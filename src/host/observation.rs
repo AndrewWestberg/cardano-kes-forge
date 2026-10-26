@@ -106,14 +106,14 @@ impl Cache {
     }
 
     pub fn record_confirmed(&mut self, observation: ConfirmedObservation) -> bool {
-        if let Some(historical) = self.historical.as_ref() {
-            if observation.context.revision < historical.revision
+        if let Some(historical) = self.historical.as_ref()
+            && (observation.context.revision < historical.revision
                 || (observation.context.revision == historical.revision
                     && (observation.context.generation != historical.generation
-                        || observation.context.certificate_digest != historical.certificate_digest))
-            {
-                return false;
-            }
+                        || observation.context.certificate_digest
+                            != historical.certificate_digest)))
+        {
+            return false;
         }
         if let Some(current) = self.confirmed.as_ref() {
             if !same_pool_context(&observation.context, &current.context) {

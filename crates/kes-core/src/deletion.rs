@@ -34,16 +34,21 @@ pub enum PreparationOutcome {
     },
 }
 
-pub enum ReenrollmentOutcome {
-    Applied {
-        directory_revision: Revision,
-        slot: HardwareSlot,
-        pool: PoolRegistration,
-    },
-    AlreadyCommitted {
-        directory_revision: Revision,
-        pool_revision: Revision,
-    },
+pub struct ReenrollmentOutcome {
+    pub directory_revision: Revision,
+    pub pool_revision: Revision,
+    pub slot: HardwareSlot,
+    pool: Option<PoolRegistration>,
+}
+
+impl ReenrollmentOutcome {
+    pub const fn is_applied(&self) -> bool {
+        self.pool.is_some()
+    }
+
+    pub fn into_pool(self) -> Option<PoolRegistration> {
+        self.pool
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -361,9 +366,11 @@ pub fn reenroll(
                 && envelope.transcript_digest() == &replay.payload_digest
             {
                 let ManagementResult::Committed { revision } = replay.result;
-                return Ok(ReenrollmentOutcome::AlreadyCommitted {
+                return Ok(ReenrollmentOutcome {
                     directory_revision: directory.revision,
                     pool_revision: revision,
+                    slot: entry.slot(),
+                    pool: None,
                 });
             }
             return Err(Error::ChangedReplay);
@@ -421,9 +428,10 @@ pub fn reenroll(
     directory.tombstones[tombstone_index] = None;
     directory.live[storage_index] = Some(DirectoryEntry::new(slot, pool, incarnation));
     directory.revision = revision;
-    Ok(ReenrollmentOutcome::Applied {
+    Ok(ReenrollmentOutcome {
         directory_revision: revision,
+        pool_revision: registration.revision(),
         slot,
-        pool: registration,
+        pool: Some(registration),
     })
 }

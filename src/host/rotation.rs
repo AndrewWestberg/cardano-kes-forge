@@ -169,13 +169,11 @@ impl Cache {
             .intent
             .as_ref()
             .is_some_and(|intent| intent.target_generation == descriptor.generation);
-        if activated_target {
-            self.staged = None;
-            self.intent = None;
-        } else if self
-            .active
-            .as_ref()
-            .is_some_and(|active| active.generation != descriptor.generation)
+        if activated_target
+            || self
+                .active
+                .as_ref()
+                .is_some_and(|active| active.generation != descriptor.generation)
         {
             self.staged = None;
             self.intent = None;

@@ -150,41 +150,50 @@ struct MachinePrivateFile {
     private_key: String,
 }
 
-fn machine_fields(
+struct MachineFields<'a> {
     version: u64,
-    algorithm: &str,
-    scope: &str,
-    device_id: &str,
-    pool_id: Option<&str>,
-    incarnation_id: Option<&str>,
+    algorithm: &'a str,
+    scope: &'a str,
+    device_id: &'a str,
+    pool_id: Option<&'a str>,
+    incarnation_id: Option<&'a str>,
     credential_epoch: u64,
-    public_key: &str,
+    public_key: &'a str,
+}
+
+fn machine_fields(
+    fields: MachineFields<'_>,
     expected: MachineScope,
 ) -> Result<MachinePublic, Error> {
-    if version != 1 || algorithm != "Ed25519" {
+    if fields.version != 1 || fields.algorithm != "Ed25519" {
         return Err(Error::InvalidSchema);
     }
-    if scope != expected.name() {
+    if fields.scope != expected.name() {
         return Err(Error::WrongScope);
     }
     let (pool, incarnation) = match expected {
         MachineScope::Pool => (
-            Some(decode_hex(pool_id.ok_or(Error::InvalidSchema)?).ok_or(Error::InvalidSchema)?),
             Some(
-                decode_hex(incarnation_id.ok_or(Error::InvalidSchema)?)
+                decode_hex(fields.pool_id.ok_or(Error::InvalidSchema)?)
+                    .ok_or(Error::InvalidSchema)?,
+            ),
+            Some(
+                decode_hex(fields.incarnation_id.ok_or(Error::InvalidSchema)?)
                     .ok_or(Error::InvalidSchema)?,
             ),
         ),
-        MachineScope::Management if pool_id.is_none() && incarnation_id.is_none() => (None, None),
+        MachineScope::Management if fields.pool_id.is_none() && fields.incarnation_id.is_none() => {
+            (None, None)
+        }
         MachineScope::Management => return Err(Error::WrongScope),
     };
     Ok(MachinePublic {
         scope: expected,
-        device: decode_hex(device_id).ok_or(Error::InvalidSchema)?,
+        device: decode_hex(fields.device_id).ok_or(Error::InvalidSchema)?,
         pool,
         incarnation,
-        epoch: credential_epoch,
-        public_key: decode_spki(public_key).ok_or(Error::InvalidSchema)?,
+        epoch: fields.credential_epoch,
+        public_key: decode_spki(fields.public_key).ok_or(Error::InvalidSchema)?,
     })
 }
 
@@ -192,14 +201,16 @@ pub fn machine_public(bytes: &[u8], expected: MachineScope) -> Result<MachinePub
     let file: MachinePublicFile =
         serde_json::from_slice(bytes).map_err(|_| Error::InvalidSchema)?;
     machine_fields(
-        file.version,
-        &file.algorithm,
-        &file.scope,
-        &file.device_id,
-        file.pool_id.as_deref(),
-        file.incarnation_id.as_deref(),
-        file.credential_epoch,
-        &file.public_key,
+        MachineFields {
+            version: file.version,
+            algorithm: &file.algorithm,
+            scope: &file.scope,
+            device_id: &file.device_id,
+            pool_id: file.pool_id.as_deref(),
+            incarnation_id: file.incarnation_id.as_deref(),
+            credential_epoch: file.credential_epoch,
+            public_key: &file.public_key,
+        },
         expected,
     )
 }
@@ -208,14 +219,16 @@ pub fn machine_private(bytes: &[u8], expected: MachineScope) -> Result<MachinePu
     let file: MachinePrivateFile =
         serde_json::from_slice(bytes).map_err(|_| Error::InvalidSchema)?;
     let public = machine_fields(
-        file.version,
-        &file.algorithm,
-        &file.scope,
-        &file.device_id,
-        file.pool_id.as_deref(),
-        file.incarnation_id.as_deref(),
-        file.credential_epoch,
-        &file.public_key,
+        MachineFields {
+            version: file.version,
+            algorithm: &file.algorithm,
+            scope: &file.scope,
+            device_id: &file.device_id,
+            pool_id: file.pool_id.as_deref(),
+            incarnation_id: file.incarnation_id.as_deref(),
+            credential_epoch: file.credential_epoch,
+            public_key: &file.public_key,
+        },
         expected,
     )?;
     let seed = decode_pkcs8(&file.private_key).ok_or(Error::InvalidSchema)?;

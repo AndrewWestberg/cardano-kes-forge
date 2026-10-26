@@ -186,7 +186,7 @@ fn base64(input: &[u8]) -> String {
 fn bytes<const N: usize>(text: &str) -> [u8; N] {
     assert_eq!(text.len(), N * 2);
     let mut output = [0; N];
-    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         output[index] = (hex_digit(pair[0]) << 4) | hex_digit(pair[1]);
     }
     output

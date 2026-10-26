@@ -51,6 +51,13 @@ pub struct OperationContext {
     pub lifecycle: Lifecycle,
 }
 
+pub struct StageGenerationRequest {
+    pub actor: Actor,
+    pub expected_revision: Revision,
+    pub generation: KESGeneration,
+    pub policy: GenerationPolicy,
+}
+
 pub struct CertificationRequest<'a> {
     pub actor: Actor,
     pub expected_revision: Revision,
@@ -147,14 +154,15 @@ impl DurablePool {
         flash: &mut F,
         rng: &mut R,
         work: &mut Workspaces<'_>,
-        actor: Actor,
-        expected_revision: Revision,
-        generation: KESGeneration,
-        policy: GenerationPolicy,
+        request: StageGenerationRequest,
     ) -> Result<Revision, OperationError> {
         self.ensure_usable()?;
-        self.state
-            .stage(actor, expected_revision, generation, policy)?;
+        self.state.stage(
+            request.actor,
+            request.expected_revision,
+            request.generation,
+            request.policy,
+        )?;
         self.persist(journal, flash, rng, work)?;
         Ok(self.state.revision())
     }

@@ -29,7 +29,7 @@ std = []
 aead = { version = "0.5", default-features = false }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 chacha20poly1305 = { version = "0.10", default-features = false }
-generic-array = { version = "0.14", default-features = false }
+generic-array = { version = "=0.14.7", default-features = false }
 digest = "0.10"
 hkdf = "0.12"
 hmac = "0.12"
@@ -89,4 +89,4 @@ bench = false
 
 [package.metadata.kes-forge]
 upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
-adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"
+adaptation = "AEAD dependency feature defaults disabled and reviewed generic-array 0.14.7 pinned; Rust cryptographic source unchanged"

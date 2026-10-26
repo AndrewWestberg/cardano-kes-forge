@@ -136,10 +136,10 @@ fn execute(arguments: &Arguments) -> Result<Outcome, Error> {
                 read_certificate(arguments.certificate_file.as_deref().ok_or(Error::Usage)?)?;
             publish_certificate(&connection, arguments.generation, &certificate)?;
         }
-        if let Some(mut record) = existing {
-            if record.state() != State::Committed {
-                record.record_committed(None).map_err(operation_error)?;
-            }
+        if let Some(mut record) = existing
+            && record.state() != State::Committed
+        {
+            record.record_committed(None).map_err(operation_error)?;
         }
         return Ok(Outcome {
             descriptor: descriptor.clone(),
@@ -612,7 +612,7 @@ fn decode_hex<const N: usize>(value: &str) -> Option<[u8; N]> {
         return None;
     }
     let mut output = [0; N];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         output[index] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(output)
@@ -623,7 +623,9 @@ fn decode_hex_vec(value: &str) -> Option<Vec<u8>> {
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| Some((nibble(pair[0])? << 4) | nibble(pair[1])?))
         .collect()
 }

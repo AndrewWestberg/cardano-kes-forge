@@ -5,17 +5,21 @@ use crate::management::{Action, Target, VerifiedEnvelope};
 use crate::state::{Actor, Device, ManagementResult, PoolRegistration, StateError};
 use crate::types::{HardwareSlot, ManagementSequence, Revision};
 
-pub enum EnrollmentOutcome {
-    Applied {
-        slot: HardwareSlot,
-        directory_revision: Revision,
-        pool: PoolRegistration,
-    },
-    AlreadyCommitted {
-        slot: HardwareSlot,
-        pool_revision: Revision,
-        directory_revision: Revision,
-    },
+pub struct EnrollmentOutcome {
+    pub slot: HardwareSlot,
+    pub pool_revision: Revision,
+    pub directory_revision: Revision,
+    pool: Option<PoolRegistration>,
+}
+
+impl EnrollmentOutcome {
+    pub const fn is_applied(&self) -> bool {
+        self.pool.is_some()
+    }
+
+    pub fn into_pool(self) -> Option<PoolRegistration> {
+        self.pool
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -63,10 +67,11 @@ pub fn enroll(
                 && envelope.transcript_digest() == &replay.payload_digest
             {
                 let ManagementResult::Committed { revision } = replay.result;
-                return Ok(EnrollmentOutcome::AlreadyCommitted {
+                return Ok(EnrollmentOutcome {
                     slot: entry.slot(),
                     pool_revision: revision,
                     directory_revision: device.directory_revision(),
+                    pool: None,
                 });
             }
             return Err(Error::ChangedReplay);
@@ -93,9 +98,10 @@ pub fn enroll(
             .map_err(|_| Error::State(StateError::InvalidObject))?,
     )?;
     let slot = device.enroll(Actor::Management, &candidate, fields.expected_revision)?;
-    Ok(EnrollmentOutcome::Applied {
+    Ok(EnrollmentOutcome {
         slot,
+        pool_revision: candidate.revision(),
         directory_revision: device.directory_revision(),
-        pool: candidate,
+        pool: Some(candidate),
     })
 }

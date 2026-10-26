@@ -588,7 +588,7 @@ pub(crate) fn decode_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
         return None;
     }
     let mut output = [0; N];
-    for (index, pair) in text.as_bytes().chunks_exact(2).enumerate() {
+    for (index, pair) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         output[index] = (nibble(pair[0])? << 4) | nibble(pair[1])?;
     }
     Some(output)
@@ -622,7 +622,7 @@ pub(crate) fn decode_base64(text: &str) -> Option<Vec<u8>> {
         return None;
     }
     let mut output = Vec::with_capacity(text.len() / 4 * 3);
-    for (index, chunk) in text.as_bytes().chunks_exact(4).enumerate() {
+    for (index, chunk) in text.as_bytes().as_chunks::<4>().0.iter().enumerate() {
         let last = index + 1 == text.len() / 4;
         let a = base64_value(chunk[0])?;
         let b = base64_value(chunk[1])?;

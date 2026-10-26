@@ -2,7 +2,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use kes_core::cbor::{Encoder, Value};
 use kes_core::credentials::{self, CredentialOutcome, DiscardOutcome};
 use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
-use kes_core::deletion::{self, DeletionOutcome, ReenrollmentOutcome};
+use kes_core::deletion::{self, DeletionOutcome};
 use kes_core::generation::{Admission, GenerationCoordinator, GenerationRequest, OperationStatus};
 use kes_core::journal::{DirectoryCodec, JournalContext, JournalScope, PoolCodec, SnapshotCodec};
 use kes_core::management::{self, Action, SigningFields, Target};
@@ -669,30 +669,22 @@ fn deletion_retains_history_and_only_fresh_incarnation_can_reenroll() {
         &fresh_payload,
     );
     let fresh = verify(&fresh_bytes, &management);
-    let ReenrollmentOutcome::Applied {
-        directory_revision,
-        pool: replacement,
-        ..
-    } = deletion::reenroll(&mut directory, None, &fresh).unwrap()
-    else {
-        panic!("fresh incarnation replayed");
-    };
-    assert_eq!(directory_revision, Revision::new(4));
+    let outcome = deletion::reenroll(&mut directory, None, &fresh).unwrap();
+    assert!(outcome.is_applied());
+    assert_eq!(outcome.directory_revision, Revision::new(4));
+    let replacement = outcome
+        .into_pool()
+        .expect("fresh re-enrollment returns pool");
     assert_eq!(replacement.generation_high_water(), high_water);
     assert_eq!(replacement.incarnation(), new_incarnation);
     assert_eq!(
         replacement.management_sequence(),
         ManagementSequence::new(3)
     );
-    let ReenrollmentOutcome::AlreadyCommitted {
-        directory_revision,
-        pool_revision,
-    } = deletion::reenroll(&mut directory, Some(&replacement), &fresh).unwrap()
-    else {
-        panic!("exact re-enrollment did not replay");
-    };
-    assert_eq!(directory_revision, Revision::new(4));
-    assert_eq!(pool_revision, Revision::new(0));
+    let replay = deletion::reenroll(&mut directory, Some(&replacement), &fresh).unwrap();
+    assert!(!replay.is_applied());
+    assert_eq!(replay.directory_revision, Revision::new(4));
+    assert_eq!(replay.pool_revision, Revision::new(0));
 }
 
 #[test]

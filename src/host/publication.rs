@@ -37,6 +37,12 @@ impl PublicationFault for NoFault {
     }
 }
 
+pub struct GenerationFiles<'a> {
+    pub verification_key: &'a Path,
+    pub encrypted_signing_key: &'a Path,
+    pub manifest: &'a Path,
+}
+
 pub fn publish_generation(
     connection: &PoolConnection,
     request: [u8; 16],
@@ -51,9 +57,11 @@ pub fn publish_generation(
         request,
         result,
         backup,
-        verification_key_file,
-        encrypted_signing_key_file,
-        generation_file,
+        GenerationFiles {
+            verification_key: verification_key_file,
+            encrypted_signing_key: encrypted_signing_key_file,
+            manifest: generation_file,
+        },
         &NoFault,
     )
 }
@@ -63,9 +71,7 @@ pub fn publish_generation_with<F: PublicationFault>(
     request: [u8; 16],
     result: &GenerationResult,
     backup: &BackupResult,
-    verification_key_file: &Path,
-    encrypted_signing_key_file: &Path,
-    generation_file: &Path,
+    files: GenerationFiles<'_>,
     fault: &F,
 ) -> Result<(), Error> {
     if result.creation_request != request
@@ -117,17 +123,17 @@ pub fn publish_generation_with<F: PublicationFault>(
     // Preflight every destination before creating any missing output. An
     // unrelated existing path therefore cannot produce a misleading partial
     // result during this invocation.
-    preflight(verification_key_file, &verification_key)?;
-    preflight(encrypted_signing_key_file, &backup.backup)?;
-    preflight(generation_file, &generation)?;
+    preflight(files.verification_key, &verification_key)?;
+    preflight(files.encrypted_signing_key, &backup.backup)?;
+    preflight(files.manifest, &generation)?;
 
-    publish_exact(verification_key_file, &verification_key)?;
+    publish_exact(files.verification_key, &verification_key)?;
     fault.after_link(GenerationOutput::VerificationKey)?;
-    publish_exact(encrypted_signing_key_file, &backup.backup)?;
+    publish_exact(files.encrypted_signing_key, &backup.backup)?;
     fault.after_link(GenerationOutput::EncryptedSigningKey)?;
     // The completion manifest is intentionally linked last. Its presence means
     // both content-addressed outputs were already durable.
-    publish_exact(generation_file, &generation)
+    publish_exact(files.manifest, &generation)
 }
 
 pub fn publish_backup(

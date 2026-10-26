@@ -17,6 +17,11 @@
  
  [dependencies.digest]
  version = "0.10"
+@@ -84,3 +88,3 @@
+ [dependencies.generic-array]
+-version = "0.14"
++version = "=0.14.7"
+ default-features = false
 @@ -178,3 +182,7 @@
  p521 = ["dep:p521"]
  std = []
@@ -24,7 +29,7 @@
 +
 +[package.metadata.kes-forge]
 +upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
-+adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"
++adaptation = "AEAD dependency feature defaults disabled and reviewed generic-array 0.14.7 pinned; Rust cryptographic source unchanged"
 --- upstream/hpke-0.13.0/Cargo.toml.orig
 +++ third-party/hpke/Cargo.toml.orig
 @@ -26,9 +26,9 @@
@@ -37,7 +42,8 @@
 +aead = { version = "0.5", default-features = false }
 +aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
 +chacha20poly1305 = { version = "0.10", default-features = false }
- generic-array = { version = "0.14", default-features = false }
+-generic-array = { version = "0.14", default-features = false }
++generic-array = { version = "=0.14.7", default-features = false }
  digest = "0.10"
  hkdf = "0.12"
 @@ -86,3 +86,7 @@
@@ -47,4 +53,4 @@
 +
 +[package.metadata.kes-forge]
 +upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
-+adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"
++adaptation = "AEAD dependency feature defaults disabled and reviewed generic-array 0.14.7 pinned; Rust cryptographic source unchanged"

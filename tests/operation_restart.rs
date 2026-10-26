@@ -521,9 +521,11 @@ fn publish_fixture(root: &Path, boundary: Option<GenerationOutput>, prefix: &str
                 REQUEST,
                 &result,
                 &backup,
-                &verification,
-                &encrypted,
-                &manifest,
+                publication::GenerationFiles {
+                    verification_key: &verification,
+                    encrypted_signing_key: &encrypted,
+                    manifest: &manifest,
+                },
                 &AbortAfter(output),
             );
         }

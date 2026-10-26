@@ -282,7 +282,7 @@ impl Fixture {
         let certificate = certificate(&cold, &verification_key, 0, 100);
         let certificate_digest = Sha256::digest(&certificate).into();
         let durable = DurablePool::new(pool, token).unwrap();
-        Self {
+        let fixture = Self {
             cold,
             actor,
             generation,
@@ -296,6 +296,12 @@ impl Fixture {
             entropy,
             buffers,
             durable,
-        }
+        };
+        assert_eq!(fixture.layout, JournalLayout::pool(0).unwrap());
+        assert_eq!(
+            fixture.durable.state().unwrap().cold_verification_key(),
+            &fixture.cold.verifying_key().to_bytes()
+        );
+        fixture
     }
 }

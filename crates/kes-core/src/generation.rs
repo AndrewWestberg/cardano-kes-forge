@@ -245,13 +245,14 @@ impl GenerationCoordinator {
                 generation_number,
             };
         }
-        if let Some(number) = generation_number {
-            if number.get() != 0 && number <= pool.generation_high_water() {
-                return OperationStatus::ResultReclaimed {
-                    request,
-                    generation_number: number,
-                };
-            }
+        if let Some(number) = generation_number
+            && number.get() != 0
+            && number <= pool.generation_high_water()
+        {
+            return OperationStatus::ResultReclaimed {
+                request,
+                generation_number: number,
+            };
         }
         OperationStatus::Unknown {
             request,

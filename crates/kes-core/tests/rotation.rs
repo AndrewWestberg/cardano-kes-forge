@@ -1,6 +1,7 @@
 use kes_core::{
     activation::{
         ActivationRequest, CertificationRequest, DurablePool, OperationError, ScheduleRequest,
+        StageGenerationRequest,
     },
     certificate::CertificateError,
     crypto::{Generation, KesKey, PublicTreeBuffer, verify},
@@ -91,9 +92,10 @@ fn replacement(fixture: &mut Fixture, number: u64, tag: u8, counter: u64) -> Rep
             .unwrap();
     let mut object_bytes = vec![0; usize::from(object.reference().total_length)];
     object.encode_into(&mut object_bytes).unwrap();
+    let object_offset = fixture.layout.object_offset(1).unwrap();
     fixture
         .flash
-        .install_public_object(fixture.layout.object_offset(1).unwrap(), &object_bytes);
+        .install_public_object(object_offset, &object_bytes);
     let state = KESGeneration::new_staged(
         GenerationSpec {
             generation_id: generation,
@@ -135,10 +137,12 @@ fn stage_and_certify(fixture: &mut Fixture) -> Replacement {
             &mut fixture.flash,
             &mut fixture.entropy,
             &mut fixture.buffers.work(),
-            fixture.actor,
-            Revision::new(3),
-            replacement.state.take().unwrap(),
-            policy,
+            StageGenerationRequest {
+                actor: fixture.actor,
+                expected_revision: Revision::new(3),
+                generation: replacement.state.take().unwrap(),
+                policy,
+            },
         )
         .unwrap();
     fixture
@@ -319,10 +323,12 @@ fn schedule_rejects_wrong_context_periods_counter_replay_and_second_staged_key()
             &mut fixture.flash,
             &mut fixture.entropy,
             &mut fixture.buffers.work(),
-            fixture.actor,
-            Revision::new(3),
-            staged_replacement.state.take().unwrap(),
-            policy,
+            StageGenerationRequest {
+                actor: fixture.actor,
+                expected_revision: Revision::new(3),
+                generation: staged_replacement.state.take().unwrap(),
+                policy,
+            },
         )
         .unwrap();
     assert!(matches!(
@@ -440,10 +446,12 @@ fn schedule_rejects_wrong_context_periods_counter_replay_and_second_staged_key()
             &mut fixture.flash,
             &mut fixture.entropy,
             &mut fixture.buffers.work(),
-            fixture.actor,
-            Revision::new(5),
-            third.state.take().unwrap(),
-            policy,
+            StageGenerationRequest {
+                actor: fixture.actor,
+                expected_revision: Revision::new(5),
+                generation: third.state.take().unwrap(),
+                policy,
+            },
         ),
         Err(OperationError::State(StateError::StagedConflict))
     ));

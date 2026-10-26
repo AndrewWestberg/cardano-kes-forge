@@ -86,7 +86,7 @@ default-features = false
 version = "0.10"
 
 [dependencies.generic-array]
-version = "0.14"
+version = "=0.14.7"
 default-features = false
 
 [dependencies.hkdf]
@@ -185,4 +185,4 @@ x25519 = ["dep:x25519-dalek"]
 
 [package.metadata.kes-forge]
 upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
-adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"
+adaptation = "AEAD dependency feature defaults disabled and reviewed generic-array 0.14.7 pinned; Rust cryptographic source unchanged"

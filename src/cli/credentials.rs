@@ -109,8 +109,8 @@ pub fn run_authority(arguments: Vec<OsString>) -> ExitCode {
 
 fn parse_pairs(arguments: &[OsString]) -> Option<Vec<(OsString, OsString)>> {
     let mut parsed = Vec::with_capacity(arguments.len() / 2);
-    let mut chunks = arguments.chunks_exact(2);
-    for pair in &mut chunks {
+    let (pairs, remainder) = arguments.as_chunks::<2>();
+    for pair in pairs {
         if !pair[0].as_encoded_bytes().starts_with(b"--")
             || parsed.iter().any(|(name, _)| name == &pair[0])
         {
@@ -118,7 +118,7 @@ fn parse_pairs(arguments: &[OsString]) -> Option<Vec<(OsString, OsString)>> {
         }
         parsed.push((pair[0].clone(), pair[1].clone()));
     }
-    if chunks.remainder().is_empty() {
+    if remainder.is_empty() {
         Some(parsed)
     } else {
         None
