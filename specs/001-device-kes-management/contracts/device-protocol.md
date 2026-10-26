@@ -46,6 +46,24 @@ Response repeats identity, request and operation, adds `request_seq`, `seq`, `st
 
 The daemon-facing socket uses the same versioned length/CBOR operation payloads but terminates device sessions internally. Local requests include configured `connection`, `request`, `budget_ms`, `op`, `payload`; local response includes those identifiers and `status`, `payload`. Socket ACLs map peer UID to permitted configured connections; a caller cannot name another connection or submit a replacement credential. Credentials are loaded from restricted files, not embedded in ordinary requests. Apply `SO_PEERCRED` and safe socket-path ownership; no world-writable listener. Haskell CLI/node implement this small byte contract natively rather than shelling out per signature.
 
+### Concrete v1 codec conventions
+
+The implemented `kes_protocol` codec is allocation-free: caller-owned receive/encode buffers and borrowed exact payload/message views. A first nonempty receive starts the fixed 2000-ms incomplete-frame deadline; more fragments never reset it. Syntax validation is not authentication, enrollment, readiness or permission to execute an operation. Raw byte views, envelopes and development-state views have no Debug formatter; parser errors do not echo input.
+
+All maps are closed and every field is required unless prefixed `?`. `Bn` means an exact n-byte bytestring, `U` an unsigned64, `U32` unsigned32, `Tn` UTF-8 text of at most n bytes without NUL. Positive U excludes zero. Map keys are text and sorted by their exact encoded bytes. Only unsigned integers, bytes, text, arrays, maps, bool and null are admitted; canonical syntax does not normalize text. `pool`/`incarnation` are either B28/B16 together or both null. Wire network names are snake_case; bootstrap JSON retains its existing camelCase names.
+
+Authenticated response fields are exactly the request fields minus `budget_ms`, plus `request_seq` and `status`; response `seq` is the device sequence. Local request fields are exactly `{version,connection,request,budget_ms,op,payload}`, and local response fields `{version,connection,request,op,status,payload}`. Connection names are 1–64 ASCII alphanumeric/`-_.`. Dedicated unauthenticated-session envelopes are:
+
+| Kind | Exact fields, in addition to version1/op |
+|---|---|
+| INFO request | `request:B16,payload:{challenge:B32}` |
+| INFO response | `request:B16,device:B16,status,payload,signature:B64` |
+| OPEN request | `device:B16,pool:B28|null,incarnation:B16|null,request:B16,payload` |
+| OPEN response | same target/request fields, `status,payload,mac:B32` |
+
+INFO/OPEN are rejected in ordinary device/local envelopes. Pool scope is required for generation, backup, certification, activation, scheduling, evolution, signing, observation and development inspection; update operations require device scope. STATUS/OP_STATUS/MANAGE/OPEN admit either scope. DEV_INSPECT is rejected in both local socket directions; its eventual development-only handler is not implemented by the codec.
+
+
 ## Operation catalog
 
 All mutations carry `expected_revision` except generation, which additionally reconciles by durable generation number/creation ID. Every generation-specific operation names `generation`. Device checks machine authority AND pool binding; a management signature does not grant plaintext extraction.
@@ -67,6 +85,70 @@ All mutations carry `expected_revision` except generation, which additionally re
 | `DEV_INSPECT` | explicit development opt-in and pool authority | generation, protected-output request | Current disposable state plus period/context; compiled out of release. Node sockets never expose it. |
 
 Pool `STATUS` can show the public authorization state, not machine credentials. Host operator status joins its last node-period observation to report remaining validity and labels absent/stale observations. `STATUS`, `GET_BACKUP` and telemetry reads do not evolve. `OBSERVE_PERIOD` is explicit lifecycle processing by the node, needed to execute scheduled rotation even when no block is forged.
+
+### Exact operation payload schemas
+
+| Request | Closed payload |
+|---|---|
+| OPEN | `boot_nonce:B32,credential_epoch:U,open_counter:U,encapsulation:B32,ciphertext:B48,signature:B64` |
+| STATUS | `?generation:B16` |
+| GENERATE | `next_generation_number:U,expected_revision:U` |
+| OP_STATUS | `request:B16,?generation_number:U` |
+| GET_BACKUP | `generation:B16` |
+| CERTIFY | `generation:B16,certificate:bytes<=1024,network:Network,expected_revision:U` |
+| ACTIVATE | `generation:B16,certificate_digest:B32,current_absolute_period:U,expected_active_generation:B16|null,expected_revision:U` |
+| SCHEDULE | ACTIVATE fields with `activation_absolute_period` instead of `current_absolute_period` |
+| EVOLVE | `generation:B16,certificate_digest:B32,target_absolute_period:U,network:Network,expected_revision:U` |
+| SIGN | `generation:B16,certificate_digest:B32,absolute_period:U,network:Network,message:bytes<=4096` |
+| OBSERVE_PERIOD | `absolute_period:U,network:Network,expected_revision:U` |
+| MANAGE | Management below |
+| UPDATE_BEGIN | `manifest_digest:B32,expected_revision:U` |
+| UPDATE_CHUNK | `manifest_digest:B32,offset:U,bytes:bytes<=4096,expected_revision:U`; checked offset+length |
+| UPDATE_FINALIZE | `manifest_digest:B32,final_digest:B32,expected_revision:U` |
+| DEV_INSPECT | `generation:B16,protected_output:true` |
+
+`Network` is `{network_magic:U32,shelley_genesis_digest:B32,slots_per_kes_period:positive U,max_kes_evolutions:U in1..64}`. The certificate bytes are canonical CBOR `[[hot_vk:B32,counter:U,start_period:U,cold_signature:B64],cold_vk:B32]`; protocol structural parsing alone does not verify its signature, identity, lifetime or counter. The core certificate layer separately verifies exact48-byte OCertSignable/cold signature, enrolled identities/network/lifetime and activated-counter rules before RAM certification. Network is not a signed opcert field. This core enforcement does not imply an implemented authenticated device dispatcher or durable acknowledgement.
+
+| OK response | Closed payload |
+|---|---|
+| INFO | `challenge:B32,identity_public_key:B32,hpke_public_key:B32,boot_nonce:B32,open_counters:Counter[<=33],firmware_digest:B32,security_version:U,hardware_policy_digest:B32,security_mode:Security,capability_evidence:bytes<=2048,limits:Limits` |
+| OPEN | `session:B16,challenge_acknowledgement:B32` |
+| STATUS | `health:Health,security_mode:Security,revision:U,credential_epoch:U,revoked:bool,active:Descriptor|null,staged:Descriptor|null,blocking_reason:T256,directory:DirectoryEntry[<=32]` |
+| GENERATE/OP_STATUS/CERTIFY/ACTIVATE/SCHEDULE/OBSERVE_PERIOD | Descriptor |
+| GET_BACKUP | `generation:B16,backup:complete BackupArtifact<=2048,artifact_digest:B32` |
+| EVOLVE | Context |
+| SIGN | Context plus `signature:B448,message_digest:B32` |
+| MANAGE | `management_sequence:U,revision:U` |
+| UPDATE_BEGIN/CHUNK/FINALIZE | `manifest_digest:B32,offset:U,revision:U` |
+| DEV_INSPECT | Context plus `state:B608`, never an initial-state backup |
+
+`Context` is `{revision:U,generation:B16,certificate_digest:B32,relative_period:0..63,lifecycle:Lifecycle,health:Health}`. `Descriptor` is `{generation:B16,generation_number:U,creation_request:B16,verification_key:B32,artifact_digest:B32,revision:U,certificate_digest:B32|null,relative_period:0..63,lifecycle:Lifecycle,health:Health,backup_available:bool,certificate_start:U|null,certificate_counter:U|null}`. `DirectoryEntry` is `{pool:B28,incarnation:B16,revision:U,credential_epoch:U,revoked:bool,health:Health,active:B16|null,staged:B16|null}`; generation references avoid excessive nesting. Scope-specific directory/descriptor contents remain runtime invariants.
+
+`Counter` is `{pool:B28|null,incarnation:B16|null,open_counter:U}` with paired scope. `Limits` fixes U32 values `{frame_bytes:8192,message_bytes:4096,certificate_bytes:1024,backup_bytes:2048,pools:32,sessions:33}`. Health is `healthy|damaged|unavailable`; Lifecycle is `staged|certified-staged|active|expired|retired`; Security is `development|release-unprovisioned|release-ready`. A label is never evidence of readiness.
+
+`IN_PROGRESS` is restricted to GENERATE/OP_STATUS with `{request:B16,generation_number:U}`. OP_STATUS `UNKNOWN|NOT_COMMITTED|RESULT_RECLAIMED` uses `{request:B16,?generation_number:U}`. Committed `EXPIRED` on SIGN/EVOLVE/OBSERVE_PERIOD uses Context, never a signature. Other non-OK errors use `{scope:"device"|"pool",diagnostic:T256}`; public diagnostics and authenticity must be enforced by the runtime.
+
+### Exact management and signed transcript schemas
+
+Management is `{device:B16,pool:B28|null,incarnation:B16|null,management_sequence:U,request:B16,expected_revision:U,action,canonical_payload:bytes<=4096,signature:B64}`. The payload bytes contain an independently canonical closed CBOR map. Outer device must equal the signed device; a pool-scoped outer target must equal signed pool/incarnation. A device management transport may address a signed pool target.
+
+| Action and target | Closed canonical payload |
+|---|---|
+| ENROLL, pool | `version:1,device:B16,pool:B28,incarnation:B16,cold_verification_key:B32,network:Network,machine_public_key:B32,credential_epoch:0,recipient_public_key:B32,recipient_id:B32`; inner target matches signed target |
+| RECIPIENT_REPLACE, pool | `recipient_public_key:B32,recipient_id:B32` |
+| STAGED_DISCARD, pool | `generation:B16` |
+| POOL_DELETE, pool | empty map |
+| CREDENTIAL_REPLACE, either | `machine_public_key:B32,credential_epoch:U` |
+| CREDENTIAL_REVOKE, either | `credential_epoch:U` |
+| DEVICE_RETIRE, device | empty map |
+| FIRMWARE_AUTHORIZE, device | Manifest |
+
+`Manifest` is `{version:1,firmware_digest:B32,partition_manifest_digest:B32,storage_schema:1,image_length:positive U,security_version:U,hardware_policy_digest:B32,signature:B64}`. Structural management validation does not replace distinct firmware/ROM authority, image validation or provisioning evidence.
+
+Session info is the eight-element array specified above; the OPEN-signature input extends it with encapsulation and ciphertext to ten elements. The management-signature input is `["cardano-kes-forge/manage/v1",device,pool-or-null,incarnation-or-null,management_sequence,request,expected_revision,action,canonical_payload-map]`; the final element is the unchanged underlying map, not another bytestring wrapper. Borrowed visitors emit canonical field omission and transcript pieces without copying a message body; callers supply the prescribed domain prefix.
+
+The backup syntax parser recognizes only the exact KESBKP01 schema from CLI/backup: version1/KEM32/KDF1/AEAD3, fixed identifiers/public keys, period0, ciphertext624 and device signature64. It does not authenticate the recipient digest, device signature, HPKE or AEAD. Authentication and lifecycle handlers remain later foundation/story work.
+
 
 ### Host observation freshness and operational latency
 

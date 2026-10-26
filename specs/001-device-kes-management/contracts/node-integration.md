@@ -51,6 +51,8 @@ Rotation is serialized with each pool's generation selection, not a global lock.
 
 After lost acknowledgement or restart, reconcile device active generation/certificate/revision before resuming signing. Persist scheduled intent on the device and public descriptors/artifacts on host; device state wins over stale host files. Normal rotation requires no node restart, SIGHUP, separate PIN, management credential or second operator. The existing node SIGHUP path remains for existing source behavior, not the sole forge activation mechanism.
 
+Successful certification durably publishes the exact canonical public operational certificate in the socket directory as `.kes-forge-<connectionName>-<generationId>.operational-certificate.cbor` before reporting CLI completion. Publication is owner-controlled, no-follow, atomic and idempotent only for identical bytes. Native reconciliation reads the generation-scoped file only after an authenticated active descriptor selects it; SHA-256 digest, KES verification key, start period and counter must all match that descriptor before the dynamic `OCert` replaces the old context. A staged file cannot change active signing, and a missing/mismatched file makes only that pool unavailable rather than reloading configuration or falling back.
+
 ## Failure scope
 
 | Condition | Required behavior |

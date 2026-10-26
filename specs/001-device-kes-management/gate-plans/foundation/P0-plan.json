@@ -1,0 +1,9 @@
+{
+  "version":1,
+  "build":"core:protected",
+  "benchmark":"kes",
+  "cpu":0,
+  "governor":"powersave",
+  "maximum_load_per_cpu":0.1,
+  "require_kernel_isolation":true
+}

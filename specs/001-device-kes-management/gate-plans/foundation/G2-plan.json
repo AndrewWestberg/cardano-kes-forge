@@ -1,0 +1,10 @@
+{
+  "targets": {
+    "certificate": {"build":"core:native","target":"certificate_interop"},
+    "core-state": {"build":"core:protected","target":"lifecycle_properties"},
+    "frame": {"build":"shared:protocol","target":"codec"},
+    "native-crypto": {"build":"core:native","target":"crypto_interop"},
+    "session": {"build":"core:protected","target":"session"},
+    "software-journal": {"build":"core:protected","target":"journal_faults"}
+  }
+}

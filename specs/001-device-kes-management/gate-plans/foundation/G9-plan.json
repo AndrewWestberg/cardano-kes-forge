@@ -1,0 +1,6 @@
+{
+  "targets": {
+    "core-state":{"build":"core:protected","target":"lifecycle_properties"},
+    "session":{"build":"core:protected","target":"session"}
+  }
+}

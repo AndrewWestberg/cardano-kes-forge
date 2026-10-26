@@ -1,0 +1,315 @@
+{
+  "version": 1,
+  "campaign": "operational-software-power-loss",
+  "verdict": "pass",
+  "physical_status": "unavailable-not-attempted",
+  "operational_boundaries": [
+    "candidate-object-write",
+    "candidate-object-read-verify",
+    "candidate-bank-erase",
+    "candidate-bank-write",
+    "candidate-bank-verify",
+    "commit-page-erase",
+    "commit-page-write",
+    "commit-page-verify",
+    "predecessor-bank-erase",
+    "predecessor-bank-verify",
+    "ram-secret-wipe",
+    "clean-page-erase",
+    "clean-page-write",
+    "clean-page-verify",
+    "acknowledgement",
+    "verification-key-output-link",
+    "encrypted-backup-output-link",
+    "completion-manifest-output-link"
+  ],
+  "cut_schedule": {
+    "evolution-signing": [
+      "candidate-bank-erase",
+      "candidate-bank-write",
+      "candidate-bank-verify",
+      "commit-page-erase",
+      "commit-page-write",
+      "commit-page-verify",
+      "predecessor-bank-erase",
+      "predecessor-bank-verify",
+      "ram-secret-wipe",
+      "clean-page-erase",
+      "clean-page-write",
+      "clean-page-verify",
+      "acknowledgement"
+    ],
+    "expiry": [
+      "candidate-bank-erase",
+      "candidate-bank-write",
+      "candidate-bank-verify",
+      "commit-page-erase",
+      "commit-page-write",
+      "commit-page-verify",
+      "predecessor-bank-erase",
+      "predecessor-bank-verify",
+      "ram-secret-wipe",
+      "clean-page-erase",
+      "clean-page-write",
+      "clean-page-verify",
+      "acknowledgement"
+    ],
+    "first-activation": [
+      "candidate-bank-erase",
+      "candidate-bank-write",
+      "candidate-bank-verify",
+      "commit-page-erase",
+      "commit-page-write",
+      "commit-page-verify",
+      "predecessor-bank-erase",
+      "predecessor-bank-verify",
+      "ram-secret-wipe",
+      "clean-page-erase",
+      "clean-page-write",
+      "clean-page-verify",
+      "acknowledgement"
+    ],
+    "generation": [
+      "candidate-object-write",
+      "candidate-object-read-verify",
+      "candidate-bank-erase",
+      "candidate-bank-write",
+      "candidate-bank-verify",
+      "commit-page-erase",
+      "commit-page-write",
+      "commit-page-verify",
+      "predecessor-bank-erase",
+      "predecessor-bank-verify",
+      "ram-secret-wipe",
+      "clean-page-erase",
+      "clean-page-write",
+      "clean-page-verify",
+      "acknowledgement"
+    ],
+    "output-publication": [
+      "verification-key-output-link",
+      "encrypted-backup-output-link",
+      "completion-manifest-output-link"
+    ]
+  },
+  "public_state_before_after_ack": [
+    "revision",
+    "relativePeriod",
+    "activeGeneration",
+    "stagedGeneration",
+    "lifecycle",
+    "publicObjectReference"
+  ],
+  "signature_verification": "every signature returned by the exercised operations path was independently verified",
+  "ordinary_recovery_cases": 99330,
+  "intentional_corruption_cases": 1,
+  "pool_identities": [
+    "e6ae4b034bc87fe370b6ee56410b7ce415ea13f9d57aa972be1bb0e0",
+    "f1b1bbcaf4545c522e82831b287bbd828ef07518ed986ab31c7b6964",
+    "1ed8f95bb095d6a355db0a72afe37c61c51e4c33b037749d006bfc11",
+    "3404ff391e8555b437808867ee7c6a9b448e0082985d9bd04a17a55a",
+    "fdd40b0cfbd9cefef82eb8b7adc64d0d321e26fd1c28588e0d5e29c3",
+    "f21891044fd8b002af802a70553d624c111a91f3d26b0252cb35a4cb",
+    "ad23b199a0dd4f07b8bf081c32768d10ac67dc34e9e9f8d1a60425d4",
+    "b5a487e60092ecd26a8f1cd9841c7b9e5311db1f1eb47cd2ce5cea6a",
+    "838a3c327a631791f83ead44553648949ded1f9d1aac87407a637c94",
+    "75f5239901d59ab449aade8b2e199c1f0d975716f3caa60b2f7e7b64",
+    "f0489ac038598da31f3b15f25411bbc782d851badb453a1510276aa4",
+    "dbaf9d5a54d8405fbdeffb45e6c7ae28a868a31862d54ae8ca34d890",
+    "0bd17debcbbe372cde636610e18191a027f08089010e78cef3a54d79",
+    "fc2bae081ae75f52a542d669956d32362fcff44f55d2b2313692387a",
+    "b4b9d3617aeb71d58a6e06def4ccc6add956c5c74ad851a9b5389236",
+    "68c3917e8b0ce6b86439fcfe6f6c5e7c39ad2d6e5ffa28e1deee74eb",
+    "421a7aa49f554f31688b76aa1d5f3e3ef9ba3a986f57c1c73be995a9",
+    "de025ea03bab73a65f7ebdc3e4ed5c547def310204f6ec0e483d11c9",
+    "7bc2f0aa8280a1d6a7602ed17b258c37338f80d866a11abca6f4994d",
+    "d94ea89dd5741a38ccb2e28ecb64ab0975e3d2d6f512a42e611a0f30",
+    "cab710caf7ace81fe783cef3bbef5e2e17d39d8f01baffd13923560f",
+    "cfbd56ef4b9712a8b7710cde6cbabb3ec675ef219a3de639e6eec1ac",
+    "527430acdcc74a79c0fdc8ed3d308fa3977a934eb34aad8f7e56c749",
+    "27a16507927a6b584e4c87425815357f2158983c51c08da0195fca5c",
+    "49be6d88177d0578e7fafd76822553e7c9e7ee939fc99a3145d5b1dc",
+    "0efbe23e54fabf9dff2571b97f301c5bf00488d5715d07b9bd62d914",
+    "1e4ce101021d547182bfa6ab080b56080a0f26482146dbf349052708",
+    "0247bcd068fea62bef2734e6c9e2f5325f1c5ecb5f6db506f3d6950f",
+    "9c20cdd931409ff2b3c2c398dfa4a169feb69677ca4b24837d086f28",
+    "eed5225e72644a609ae3493a4d3132ec176b576ed61c71fdb3c8346d",
+    "31a0891f6e50f2205ef40f006acb49df8589f8d36bc660f5358718c8",
+    "8cbdc740352d55f4added0da0715d9f0dffb4ec36c7f5a44c4aecaa2"
+  ],
+  "scenarios": {
+    "evolution-signing": 1,
+    "expiry": 1,
+    "first-activation": 1,
+    "generation": 1,
+    "output-publication": 1
+  },
+  "maximum_scenario_duration_ms": 79452,
+  "aggregate_readings": {
+    "directory_journal": {
+      "ambiguous_quarantines": 215,
+      "byte_boundary_cuts": 17409,
+      "old_recoveries": 8705,
+      "successor_recoveries": 8489,
+      "version": 1
+    },
+    "pool_journal": {
+      "bit_attempts": 81920,
+      "cuts": 81921,
+      "interrupted_erase_ready": 32767,
+      "post_commit_ready": 34817,
+      "quarantined": 1724,
+      "ready_new": 35138,
+      "ready_old": 45059
+    }
+  },
+  "runs": [
+    {
+      "scenario": "pool-journal-cuts",
+      "command": [
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "journal_faults",
+        "every_transaction_prefix_bit_cut_drops_volatile_owners_and_never_rolls_back_commit",
+        "--",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "duration_ms": 79452,
+      "log": "software-pool-journal-cuts.log",
+      "log_sha256": "b4166ca1c1a0440dbdacf426e93b2882e73a6942b798eddcb9d6a83e8039aea7"
+    },
+    {
+      "scenario": "directory-journal-cuts",
+      "command": [
+        "test",
+        "--locked",
+        "--release",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "journal_faults",
+        "directory::directory_byte_boundary_cuts_cover_both_erase_sectors_without_rollback",
+        "--",
+        "--exact",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "duration_ms": 4613,
+      "log": "software-directory-journal-cuts.log",
+      "log_sha256": "8471bc6c1468bfe7cf9681185d1a604d78e00382e193952b4be7a3bcf2ec3c9d"
+    },
+    {
+      "scenario": "generation",
+      "command": [
+        "test",
+        "--locked",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "generation_concurrency",
+        "--",
+        "--test-threads=1"
+      ],
+      "duration_ms": 1534,
+      "log": "software-generation.log",
+      "log_sha256": "6deebb16e7c2f33a33d592e165f1959b8a7a5bed9842b989683da3c03a91f5ef"
+    },
+    {
+      "scenario": "activation-evolution-expiry",
+      "command": [
+        "test",
+        "--locked",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "operations",
+        "--",
+        "--test-threads=1"
+      ],
+      "duration_ms": 3479,
+      "log": "software-activation-evolution-expiry.log",
+      "log_sha256": "c6342e40d93a5e92b94f5595127b47b7ec5331c1f9e08166424ae5d8a25a649d"
+    },
+    {
+      "scenario": "restart-output-publication",
+      "command": [
+        "test",
+        "--locked",
+        "--test",
+        "operation_restart",
+        "--",
+        "--test-threads=1"
+      ],
+      "duration_ms": 187,
+      "log": "software-restart-output-publication.log",
+      "log_sha256": "4d204e1fcadb8e750a6b906e2999e7f5751132f3c88202451a09acfefb82f314"
+    },
+    {
+      "scenario": "socket-reconnect",
+      "command": [
+        "test",
+        "--locked",
+        "--test",
+        "reconnect_recovery",
+        "--",
+        "--test-threads=1"
+      ],
+      "duration_ms": 82,
+      "log": "software-socket-reconnect.log",
+      "log_sha256": "02044f4ff7c83c88ae495f4da43782573dc1b979179ebd6348d38037d4391c9d"
+    },
+    {
+      "scenario": "reconnect-expiry",
+      "command": [
+        "test",
+        "--locked",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "lifecycle_properties",
+        "skipped_current_earlier_final_and_uncertain_reconnect_are_monotonic",
+        "--",
+        "--test-threads=1"
+      ],
+      "duration_ms": 650,
+      "log": "software-reconnect-expiry.log",
+      "log_sha256": "920982901d85184e7c2bd0b1e4a696e8be2d286c775a480cdb1bc6e1f6e6f185"
+    },
+    {
+      "scenario": "pool-identities",
+      "command": [
+        "test",
+        "--locked",
+        "-p",
+        "kes-core",
+        "--features",
+        "protected-runtime",
+        "--test",
+        "lifecycle_properties",
+        "directory_capacity_preserves_full_pool_identity_and_stable_slots",
+        "--",
+        "--test-threads=1",
+        "--nocapture"
+      ],
+      "duration_ms": 72,
+      "log": "software-pool-identities.log",
+      "log_sha256": "95fbc0af6fde9a151381c02dcaac506749ccbe18c881ae355de95c1a08196687"
+    }
+  ]
+}

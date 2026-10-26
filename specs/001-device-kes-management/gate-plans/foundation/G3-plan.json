@@ -1,0 +1,27 @@
+{
+  "producer": {"build":"core:protected","target":"lifecycle_properties"},
+  "transitions": [
+    "directory-enroll",
+    "directory-reject",
+    "directory-observe",
+    "generation-stage",
+    "generation-reject",
+    "scope-reject",
+    "revision-reject",
+    "policy-reject",
+    "staged-conflict",
+    "certificate-apply",
+    "certificate-retry",
+    "certificate-conflict",
+    "certificate-network-reject",
+    "certificate-reject",
+    "first-activation",
+    "period-skip",
+    "period-current-no-write",
+    "period-stale-reject",
+    "reboot-reconcile",
+    "lost-ack-reconcile",
+    "committed-expiry",
+    "staged-survives-expiry"
+  ]
+}

@@ -1,0 +1,45 @@
+[package]
+name = "kes-firmware"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+development = []
+a2-development = []
+release = []
+usb-preflight = []
+a2-entropy-diagnostic = []
+
+[dependencies]
+kes-core.workspace = true
+kes-protocol.workspace = true
+hkdf.workspace = true
+rand_chacha.workspace = true
+sha2.workspace = true
+zeroize.workspace = true
+
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))'.dependencies]
+embassy-rp.workspace = true
+embassy-sync.workspace = true
+cortex-m-rt.workspace = true
+embassy-futures.workspace = true
+embassy-usb.workspace = true
+rp-pac.workspace = true
+
+[[bin]]
+name = "kes-usb-preflight"
+path = "src/bin/usb-preflight.rs"
+required-features = ["usb-preflight"]
+
+[[bin]]
+name = "kes-a2-development"
+path = "src/bin/a2-development.rs"
+required-features = ["a2-development"]
+
+[[bin]]
+name = "kes-a2-entropy-diagnostic"
+path = "src/bin/a2-entropy-diagnostic.rs"
+required-features = ["a2-entropy-diagnostic"]

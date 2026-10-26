@@ -1,0 +1,22 @@
+{
+  "targets": {
+    "certificate": {
+      "configurations": {"fuzz:semantic":{"build":"core:native","target":"certificate_interop"}},
+      "corpus":"fuzz/corpus/certificate"
+    },
+    "frame": {
+      "configurations": {"fuzz:semantic":{"build":"shared:protocol","target":"codec"}},
+      "corpus":"fuzz/corpus/frame"
+    },
+    "session": {
+      "configurations": {"fuzz:semantic":{"build":"core:protected","target":"session"}},
+      "corpus":"fuzz/corpus/session"
+    },
+    "snapshot": {
+      "configurations": {"fuzz:semantic":{"build":"core:protected","target":"journal_faults"}},
+      "corpus":"fuzz/corpus/snapshot"
+    }
+  },
+  "cxx_input":"libfuzzer-cxx",
+  "cxx_version":"Ubuntu clang version 21.1.8 (6ubuntu1)\nTarget: x86_64-pc-linux-gnu\nThread model: posix\nInstalledDir: /usr/lib/llvm-21/bin"
+}

@@ -1,0 +1,57 @@
+[package]
+name = "kes-protocol-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[dependencies]
+libfuzzer-sys = "=0.4.10"
+libc = "=0.2.191"
+kes-protocol = { path = "../crates/kes-protocol" }
+kes-core = { path = "../crates/kes-core" }
+xtask = { path = "../xtask" }
+rand_chacha = { version = "=0.9.0", default-features = false }
+zeroize = { version = "=1.8.2", default-features = false }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"] }
+sha2 = { version = "=0.10.9", default-features = false }
+
+[[bin]]
+name = "frame"
+path = "fuzz_targets/frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "certificate"
+path = "fuzz_targets/certificate.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot"
+path = "fuzz_targets/snapshot.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "session"
+path = "fuzz_targets/session.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "artifact"
+path = "fuzz_targets/artifact.rs"
+test = false
+doc = false
+bench = false

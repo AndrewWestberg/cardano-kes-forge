@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "candidate": "83492132e0b12d0749381f13a5d24ffa7c98877b37c09418dfc59f7ae23ea6df",
+  "increment": "foundation",
+  "verdict": "no-go",
+  "go": false,
+  "required_gate_count": 12,
+  "counts": {
+    "pass": 2,
+    "inconclusive": 2,
+    "unavailable": 8
+  },
+  "readings": {
+    "G1": {
+      "verdict": "inconclusive",
+      "manifest": "G1/manifest.json",
+      "report": null,
+      "report_sha256": null,
+      "duration_ms": 7200030,
+      "reason": "outer gate budget exhausted before a report was produced"
+    },
+    "G2": {
+      "verdict": "unavailable",
+      "manifest": "G2/manifest.json",
+      "report": "G2/report.json",
+      "report_sha256": "c0c35168fab89dd9ffa6abbb442f94b7e38744b4b9a2f4fde645590d590b58e3",
+      "duration_ms": 20326,
+      "reason": "unavailable: target emitted no public KES_GATE_SUMMARY record"
+    },
+    "G3": {
+      "verdict": "unavailable",
+      "manifest": "G3/manifest.json",
+      "report": "G3/report.json",
+      "report_sha256": "be58d414d2225be85270a5a1c3cfdbffc594cee077b0d32419bd0cb027e0e28d",
+      "duration_ms": 645909,
+      "reason": "unavailable: target emitted no public KES_GATE_SUMMARY record"
+    },
+    "G4": {
+      "verdict": "unavailable",
+      "manifest": "G4/manifest.json",
+      "report": "G4/report.json",
+      "report_sha256": "4559d525e9fde7c90b0b32743a3184e0383bba04b0ae8299b6db8ee0d95c39d6",
+      "duration_ms": 642808,
+      "reason": "unavailable: target emitted no public KES_GATE_SUMMARY record"
+    },
+    "G5": {
+      "verdict": "unavailable",
+      "manifest": "G5/manifest.json",
+      "report": "G5/report.json",
+      "report_sha256": "b6401b5acfb20bc980df76c8fc0529d2b8c36678fd6e73ca484f0ee009b67c1f",
+      "duration_ms": 3891,
+      "reason": "coverage file inventory omits compiled crate implementation sources"
+    },
+    "G6": {
+      "verdict": "unavailable",
+      "manifest": "G6/manifest.json",
+      "report": "G6/report.json",
+      "report_sha256": "96ea5673f8cc73020fd21379fb7d0667dacc2da0572458f0074d69877a5b079f",
+      "duration_ms": 20746,
+      "reason": "unavailable: target emitted no public KES_GATE_SUMMARY record"
+    },
+    "G7": {
+      "verdict": "pass",
+      "manifest": "G7/manifest.json",
+      "report": "G7/report.json",
+      "report_sha256": "d865376977d0646efdab65eee26e4cf7e4445d31984e0881225539846f0ab69e",
+      "duration_ms": 103854,
+      "cases": 64,
+      "periods": 64,
+      "independent_oracles": 2,
+      "mismatches": 0,
+      "sensitivity_passed": true
+    },
+    "G8": {
+      "verdict": "inconclusive",
+      "manifest": "G8/manifest.json",
+      "report": null,
+      "report_sha256": null,
+      "duration_ms": 1800038,
+      "reason": "outer gate budget exhausted before a report was produced"
+    },
+    "G9": {
+      "verdict": "unavailable",
+      "manifest": "G9/manifest.json",
+      "report": "G9/report.json",
+      "report_sha256": "d3ea4baa3fb3f177928b5a7b6cfd6911f8f0183607b57734c6d3267c78dc7244",
+      "duration_ms": 649397,
+      "reason": "unavailable: target emitted no public KES_GATE_SUMMARY record"
+    },
+    "G12": {
+      "verdict": "pass",
+      "manifest": "G12/manifest.json",
+      "report": "G12/report.json",
+      "report_sha256": "cf751a44bee64a35243bcb05e1f9f3ed202af68cf42a29032c384a2485b88dd8",
+      "duration_ms": 111251,
+      "cases": 15,
+      "maximum_complexity": 25,
+      "threshold": 25,
+      "sensitivity_passed": true
+    },
+    "P0": {
+      "verdict": "unavailable",
+      "manifest": "P0/manifest.json",
+      "report": "P0/report.json",
+      "report_sha256": "8562e7fd038b8003b7ec28aa251ef364db22466cbe1dc7ffbaeafd72a94eb2ef",
+      "duration_ms": 3025,
+      "reason": "inconclusive: configured benchmark CPU is not kernel-isolated"
+    },
+    "P1": {
+      "verdict": "unavailable",
+      "manifest": "P1/manifest.json",
+      "report": null,
+      "report_sha256": null,
+      "duration_ms": 2831,
+      "reason": "qualification process exited nonzero without producing a report"
+    }
+  },
+  "hardware": {
+    "qualified": false,
+    "observed_silicon_revision": "A2",
+    "minimum_required_revision": "A4",
+    "physical_power_controller_available": false,
+    "qualification_executable_available": false,
+    "firmware_flashed": false,
+    "physical_load_or_power_cut_executed": false
+  },
+  "pending": [
+    "Resolve every non-passing Foundation reading with an explicit requirement, runner, budget, environment, or hardware decision and freeze a new candidate.",
+    "Obtain stock-clock RP2350 A4-or-later qualification hardware, a real qualification executable, and a physical power controller before G8/P1.",
+    "Run US1-US5, G10/G11, release-duration fuzzing, final physical campaigns, and public-network campaigns only at their approved later increments."
+  ]
+}

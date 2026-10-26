@@ -11,6 +11,76 @@ Normative design for [spec.md](spec.md). Protocol encodings are in [device-proto
 - `NetworkBinding`: network magic, SHA-256 of exact enrolled Shelley genesis bytes, `slots_per_kes_period > 0`, `1 <= max_kes_evolutions <= 64`. The genesis digest is the platform's enrollment binding, not a claim to equal the node's differently encoded genesis-hash type. Nodes compare the exact enrolled parameters and identity before use.
 - Fixed 32-byte verification keys; 448-byte Sum6KES signatures; 608-byte canonical signing state. Algorithm/version identifiers are explicit at persistence/file boundaries.
 
+### Checked implementation boundary
+
+`kes_core::types` implements these public identities as distinct fixed-width types with no implicit defaults or slot/label conversion. Creation consumes fresh caller-supplied fallible cryptographic entropy; decoding exact public bytes is separate from authenticating enrollment. `DeviceIdentityBinding` associates the ID, identity verification key and provisioning-evidence digest but is explicitly not provisioning/readiness proof. INFO alone cannot establish a trusted pin.
+
+The six durable counter types expose checked addition/increment without wraparound. `RelativePeriod`, `HardwareSlot` and `KesLifetime` have separate bounds. `EnrolledGenesisHash` uses SHA-256 of exact bytes, never JSON normalization or the native node's hash encoding; enrollment must additionally validate the actual genesis structure and parameters. Pool identity reuses pinned no_std `blake2 0.10.6` with the BLAKE2b output size parameter set to 28, not a truncated 512-bit digest.
+
+Six behavioral boundary cases passed, including the public cold-VK vector independently produced by unmodified CLI11.4.0.0 and exact-byte SHA-256 observations. The core checked on `thumbv8m.main-none-eabihf`; a separate compiled host consumer matched both hashes, rejected counter overflow/relative64 and refused real entropy EOF without fallback. These are shared-type/API checks, not cryptographic state, firmware execution or release qualification.
+
+### Cryptographic implementation boundary
+
+`kes_core::crypto::KesKey` owns fixed zeroizing state plus immutable enrolled `KesLifetime`; ordinary request fields cannot extend it. `CanonicalState` is a non-Debug borrowed secret view with explicit algorithm1 (Sum6KES/Ed25519/BLAKE2b-256), schema1 and separately checked relative period. Only its exact608-byte body goes into conventional Cardano key serialization; neither Rust period nor enrollment metadata is appended. Unsupported identities/schema, suffixed612-byte inputs and period/state disagreement fail closed. This internal restore/interop API is not a device private-key import operation.
+
+Generation borrows caller-owned output/tree buffers with independent lifetimes and consumes fresh caller-supplied entropy; completion releases the key while retaining an immutable verified cache. Signing borrows the exact bounded message and writes a caller448-byte signature buffer. Forward/no-op/backward and shortened-lifetime rules are explicit. Out-of-lifetime refusal leaves the candidate unchanged; it is not committed expiry. The transaction owner must persist erasure and retain public expired-generation metadata before acknowledging expiry. Hardware entropy, session authorization, slot routing and durable cleanup are not established by a primitive operation.
+
+### Shared state implementation boundary
+
+`kes_core::state` separates a compact hot `Device` directory from the single cold `DirectorySnapshot` workspace. Live plus retained identities are bounded together at32 with explicit full failure, never eviction or reset. Full cold registrations/generations must not become a32-element resident firmware array: secret banks, certificates and staged trees use research R4's shared workspace. Trusted `Actor` values are internal authorization context, not an authenticated wire capability. `VerifiedReleaseReadiness` has no public constructor; a development/release label or public evidence tuple cannot authorize production.
+
+`PoolRegistration` and `KESGeneration` own their secret/public record fields; generation records retain only immutable public-object references and artifact digests after the tree workspace is released. Fixed `GenerationSecret` storage delegates to the key's explicit live/erased marker and zeroizing owner, without Clone/Debug/serde or allocator/boxing. Staging is a RAM candidate only, not a durable publication acknowledgement. Its captured policy binds pool/incarnation, recipient identity/policy epoch and credential epoch, not an ordinary revision that may change while generation runs.
+
+The public object is exact `header || tree || encrypted_backup`, maximum6144 bytes. All multibyte header integers are big-endian:
+
+| Byte range | Meaning |
+|---|---|
+| 0–7 | `KESPUB01` |
+| 8–9 | u16 format version1 |
+| 10–25 | GenerationId16 |
+| 26–27 | u16 tree length4064 |
+| 28–29 | u16 encrypted-backup length, at most2048 |
+| 30–31 | Reserved zero |
+| 32–4095 | 127 BFS public hashes, each32 bytes |
+| 4096–end | Immutable already-encrypted backup producer output |
+
+`PublicObjectRef` binds version, generation, exact total length and SHA-256 of the entire object. Parsing checks that reference, the expected VK and all63 parent hashes, rejecting trailing/unknown/reserved/malformed bytes. Only an authenticated secret snapshot can authenticate the reference; an attacker-supplied matching digest is not authority. Backup magic/map identification here does not verify its signature, HPKE or closed schema.
+
+### Certificate implementation boundary
+
+`kes_core::certificate::OperationalCertificate::decode_and_verify` owns only an exact canonical certificate, at most154 bytes, after strict cold Ed25519 verification over `hot_vk32 || counter_u64_be || start_u64_be`. It preserves bytes/digest and typed counter/start; public key getters borrow validated offsets rather than copying extra key/signature arrays. The old unchecked field constructor and state-module certificate aliases are removed. Canonical borrowed CBOR now lives once in `kes_core::cbor`; protocol framing/schema retains its own transport errors and converts the lower codec errors.
+
+`validate_bound` separately checks cold/PoolId/KES identity, the entire enrolled/request network tuple, enrolled lifetime and strictly greater last-activated counter. Network is not signed into the certificate. `LifetimeWindow` uses checked `S+L` and half-open `S <= P < S+L`; it does not establish an authenticated current period.
+
+Pool `certify` checks trusted caller scope and network, validates a new staged binding before mutation and advances only the pool revision/lifecycle, never the activated counter high-water. Exact bytes for an already-certified generation are idempotent even with an older retry revision; an impossible future revision fails. Different recertification fails without replacing current/staged key or immutable object data. `DurablePool::certify` persists a newly applied result through journal CLEAN before returning; an exact duplicate performs no write.
+
+### Secure runtime implementation boundary
+
+The firmware runtime uniquely owns fitted flash, RP2350 TRNG, derived keys and one secure gateway. The gateway contains fixed 8192-byte request and response buffers: a nonsecure caller supplies only an exact bounded slice for one copy in, and receives one bounded copy out. Secure state never retains the caller's slice. Every transaction drop zeroizes both buffers and restores the single-flight idle state. This safe ownership contract does not itself configure or prove SAU/MPU/ACCESSCTRL isolation; T041 owns that physical boundary.
+
+The OTP root remains a 32-byte secret input to HKDF-SHA256 with DeviceId salt. Versioned labels derive independent storage root, session root and device-identity seed owners. None implements Debug, Clone or serialization. Development replaces OTP persistence with a fresh identity/root on every boot and is explicitly disposable. Release currently fail-stops before operation rather than using ephemeral material; only verified T041 OTP provisioning and security policy may enable it.
+
+Entropy acquisition owns the TRNG, read-verifies sample count 200/one-inverter configuration with all three hardware tests enabled, and returns only after collecting credited hardware blocks. Generation and session each receive a newly seeded ChaCha20Rng from fresh 256-bit input under different derivation labels. Health failure or bounded timeout is sticky until reboot; time, USB data and previous pseudorandom state are never substitutes.
+
+### Authenticated session implementation boundary
+
+`kes_core::session` signs challenge-bound INFO responses against the pre-enrolled device identity pin; a key returned by INFO is never its own trust root. OPEN uses RFC9180 base mode with X25519/HKDF-SHA256/ChaCha20-Poly1305 and binds device, unpredictable boot nonce, pool/incarnation or management scope, credential epoch, per-scope open counter and request ID before decapsulation. The machine Ed25519 signature covers that tuple plus encapsulation and ciphertext. Separate exporter keys authenticate the challenge acknowledgement and exact OPEN response envelope before the host installs a session.
+
+Each established scope owns separate strict request and response u64 sequence spaces and zeroizing HMAC-SHA256 keys. Any replay, skip, exhaustion, bad MAC, wrong device/scope/session/request binding, credential epoch change or revocation invalidates that scope. Disconnect and reboot clear the fixed table. Replacement affects only the same scope; capacity is exactly32 pool sessions plus one management transport session, with compile-time record/table SRAM ceilings of256/8448 bytes. A management transport session establishes machine connectivity only: mutation still requires the separately verified management envelope and trusted internal `Actor`.
+
+### Initial durable lifecycle and dispatch boundary
+
+`kes_core::activation::DurablePool` owns the sole decoded live registration paired with its authenticated `ReadyToken`. First activation accepts only a matching certified-staged generation when no active generation exists, checks certificate/object/lifetime bindings, evolves to the eligible relative period, advances certificate high-water and persists through predecessor cleanup and CLEAN before returning context. Forward evolution persists only a strictly newer period; a same-period request is a no-write success and a lower period is rejected without invalidating the usable owner. Any journal failure wipes resident generation secrets and makes the owner unusable until authenticated recovery.
+
+`DurablePool::sign` performs required forward evolution first, so no signature can use a successor before durable cleanup. It signs the exact borrowed message, independently verifies the 448-byte result against the retained VK/lifetime/period and only then returns the signature and SHA-256 message digest. The protected exhaustive lifecycle regression covers every eligible relative period 0–63, same-period no-write behavior, stale refusal, half-open expiry refusal and durable revision progression. Committed expiry/public-metadata retention remains T072; replacement activation and scheduling remain T081/T082.
+
+`firmware::usb::UsbDispatcher` owns one 8192-byte nonsecure receive buffer; the secure gateway owns one 8192-byte request and one 8192-byte response buffer. Framing metadata is separate, so incoming bytes are parsed from caller-owned storage and the exact body is copied once into secure storage. The deterministic request envelope and signing message remain borrowed in place. The dispatcher is statically allocated on core0 rather than placed on either core's stack; host services own all queued bodies.
+
+The fixed scheduler stores deadlines/leases only. SIGN uses the original remaining `min(budget,500 ms)`, status/INFO/OPEN are capped at 2 seconds and GENERATE at 10 minutes; none resets after admission. Exactly one global generation lease exists and each scheduler turn invokes exactly one caller-owned leaf step. Compile-time constants account the R4 262144-byte KES ledger, including 24576 frame bytes, 8448 session bytes, 8192 hot metadata, 4096 dispatch metadata, 32768 shared crypto workspace, 8192 journal workspace, 16384 combined stack and 7936 margin. These are enforced design ceilings, not measured peak high-water results.
+
+
+
+
 ## Entities
 
 | Entity | Fields and relationships | Ownership/validation |
@@ -66,12 +136,15 @@ Each secret bank has an authenticated versioned header/body, dedicated COMMIT pa
 
 Recovery before serving: authenticated successor COMMIT without CLEAN requires predecessor cleanup and CLEAN completion even if the predecessor was torn during erase. A CLEAN predecessor plus an incomplete uncommitted candidate may discard that candidate. Two committed valid banks require consecutive revision/parent agreement; choose successor and clean predecessor. A corrupt apparently committed successor, ambiguous marker ordering, invalid object digest or missing authoritative bank quarantines rather than falling back. Interrupted CLEAN-page programming is retried only under the flash part's qualified program rules; otherwise recreate the same successor in an erased bank without acknowledging or exposing old state, with a recovery state machine covered by fault injection. Implementation must prove every reachable marker combination under the supported flash tear model.
 
+Implementation boundary after T017: `Journal<PoolCodec>` uses two4096-byte banks with a3584-byte authenticated snapshot span (maximum3440 canonical plaintext bytes after the128-byte header and16-byte AEAD tag) and two separate8192-byte immutable-object slots; `Journal<DirectoryCodec>` uses two8192-byte banks with a7680-byte snapshot span (maximum7536 plaintext bytes). Each bank's remaining two256-byte pages are COMMIT then CLEAN. Snapshot AAD and marker MACs bind device and exact directory or `(slot,pool,incarnation)` scope, revision, parent and bank. The firmware map places the directory after two1-MiB firmware slots, then32 isolated32-KiB pool regions. A scoped pool flash owner can reach only its24-KiB banks/objects, not its8-KiB reserve or adjacent regions. Pool decode validates lifecycle, generation, object and certificate relationships; directory decode preserves32 identities/tombstones plus replay and retirement state. The conservative W25Q32RV adapter uses core0-only aligned page/sector operations and the HAL's SRAM/core-pause/XIP-cache sequence. Physical execution and qualification remain pending.
+
+
 Deletion is journaled before directory tombstone publication; recovery reconciles directory and slot incarnations and completes both sides before reuse. Management sequence is durably advanced with the authorized operation, or directory records pending intent that is completed idempotently; no acknowledgement between independently inconsistent records. Device retirement commits a global deny state before clearing slots.
 
 Public-only orphan objects may be reclaimed after authenticated authoritative references are known. Retained referenced backups are never regenerated to repair missing bytes. Signing, status and backup retrieval never mutate lifecycle merely for telemetry.
 
 ## Host consistency and retention
 
-The daemon persists only public descriptors, encrypted artifacts, request IDs and configured credentials. Device state is authoritative; stale host files cannot roll it back. Generation number plus creation request ID permits recovery of a lost acknowledgement even after other mutations. Reused request ID with changed payload conflicts; an old generation number whose artifact has been reclaimed returns `RESULT_RECLAIMED`, never a new key. Generic mutations use revision compare-and-swap and durable last-operation identity; an uncertain older result requires status reconciliation rather than blind replay.
+The daemon persists only public descriptors, encrypted artifacts, request IDs and configured credentials. Device state is authoritative; stale host files cannot roll it back. Generation number plus creation request ID permits recovery of a lost acknowledgement even after other mutations. Reused request ID with changed payload conflicts; an old generation number whose artifact has been reclaimed returns terminal `RESULT_RECLAIMED`, never a new key. Generic mutations use revision compare-and-swap and durable last-operation identity. After timeout, disconnect or process restart, query `OP_STATUS` with the exact operation identity before any retry: resume output publication for a committed result, preserve a terminal failure/reclaimed result, or replay only the exact payload after authoritative not-committed status. An uncertain older result never permits blind mutation replay.
 
-Keep certificate/VK/artifact output manifests crash-recoverable. Files individually use atomic publication; the CLI reports success only after all outputs and a public completion manifest are durable. A partial host publication is repaired from the same committed generation, never by regenerating its secret. Device-held encrypted artifacts are a bounded retention window, not the operator's long-term archive.
+Keep certificate/VK/artifact output manifests crash-recoverable. Files individually use atomic publication; the CLI reports success only after all outputs and a public completion manifest are durable. A partial host publication is repaired from the same committed generation, never by regenerating its secret. On reconnect, discard lower-revision, retired-generation and prior-session replies; reconcile authenticated pool state before refreshing readiness. Current-period reconciliation is no-write, a lower KES period remains stale across reboot, and a later eligible period catches up directly to the durable final state. Committed expiry retains current-expired public metadata/artifact and staged replacement while the active secret stays erased. A quarantined pool is reported separately from device-wide directory/trust/entropy failure. Device-held encrypted artifacts are a bounded retention window, not the operator's long-term archive.

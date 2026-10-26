@@ -1,0 +1,59 @@
+{
+  "version": 1,
+  "candidate": "7e2c52b6986a6afa5b5cedfddbaf3db86dd914910ae5957b91bbcfcb045b14ab",
+  "story": "US3",
+  "status": "development-milestone",
+  "acceptance": false,
+  "gates": {
+    "G3": {
+      "verdict": "pass",
+      "completed": true,
+      "cases": 10000,
+      "pools": 32,
+      "stale_period_sensitivity": "pass",
+      "report": "../G3/report.json",
+      "sha256": "51481c6bd523e75ad42d2814c5b5dc5df4cfb18346fd64d0efbfd4143d376c52"
+    },
+    "G8": {
+      "verdict": "unavailable",
+      "completed": false,
+      "software_campaign": {
+        "verdict": "pass",
+        "cases": 81921,
+        "ready_old": 45059,
+        "ready_new": 35137,
+        "pool_local_quarantines": 1725,
+        "device_wide_corruptions": 0,
+        "ack_drop_sensitivity": "pass",
+        "erase_skip_sensitivity": "pass"
+      },
+      "physical_status": "unavailable",
+      "report": "../G8/report.json",
+      "sha256": "6fd5f270285947d39b940135c173ec67e4236b1eb9ec5325588ec30cb5c457d6"
+    }
+  },
+  "software_power_loss": {
+    "verdict": "pass",
+    "ordinary_recovery_cases": 99330,
+    "intentional_corruption_cases": 1,
+    "operational_boundaries": 18,
+    "pool_identities": 32,
+    "operational_scenarios": 5,
+    "socket_reconnect_executed": true,
+    "maximum_scenario_duration_ms": 30898,
+    "manifest": "software-power-loss.json",
+    "sha256": "12f7f5100f38535c43f3e00a91befa418319d57c8c684a6af691c0df337e04ce"
+  },
+  "physical_power_loss": {
+    "verdict": "unavailable",
+    "executed": false,
+    "hardware_revision": "A2",
+    "record": "power-loss.json",
+    "sha256": "af8a8403b3bc6eb9455a73ff6225659c6b6156e1686dbec1b5969e4b1ec0d7d2"
+  },
+  "deferred": {
+    "T108": "A4-or-later final frozen candidate physical campaign with at least 1000 mixed-operation cuts across 32 active and staged pools",
+    "T071": "Deletion pending-intent/incarnation consistency remains blocked on T095 tombstone semantics"
+  },
+  "scope": "This record closes the US3 development milestone only. It does not claim release acceptance or replace the required T108 physical campaign."
+}

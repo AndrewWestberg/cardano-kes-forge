@@ -1,0 +1,15 @@
+[package]
+name = "kes-protocol"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+kes-core.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+hkdf.workspace = true
+sha2.workspace = true
+rand_chacha.workspace = true
+zeroize.workspace = true

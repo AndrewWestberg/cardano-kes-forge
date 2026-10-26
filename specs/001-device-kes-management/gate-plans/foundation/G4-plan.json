@@ -1,0 +1,32 @@
+{
+  "campaigns": [
+    {
+      "build":"core:protected",
+      "modules":{
+        "core-api":{"files":["crates/kes-core/src/lib.rs"],"critical":false},
+        "core-codec":{"files":["crates/kes-core/src/cbor.rs","crates/kes-core/src/certificate.rs"],"critical":true},
+        "core-crypto":{"files":["crates/kes-core/src/crypto.rs","crates/kes-core/src/signing.rs"],"critical":true},
+        "core-persistence":{"files":["crates/kes-core/src/journal.rs","crates/kes-core/src/session.rs"],"critical":true},
+        "core-state":{"files":["crates/kes-core/src/activation.rs","crates/kes-core/src/state.rs","crates/kes-core/src/types.rs"],"critical":true}
+      }
+    },
+    {
+      "build":"core:native",
+      "modules":{
+        "core-api":{"files":["crates/kes-core/src/lib.rs"],"critical":false},
+        "core-codec":{"files":["crates/kes-core/src/cbor.rs","crates/kes-core/src/certificate.rs"],"critical":true},
+        "core-crypto":{"files":["crates/kes-core/src/crypto.rs","crates/kes-core/src/signing.rs"],"critical":true},
+        "core-persistence":{"files":["crates/kes-core/src/journal.rs","crates/kes-core/src/session.rs"],"critical":true},
+        "core-state":{"files":["crates/kes-core/src/activation.rs","crates/kes-core/src/state.rs","crates/kes-core/src/types.rs"],"critical":true}
+      }
+    },
+    {
+      "build":"shared:protocol",
+      "modules":{
+        "protocol-api":{"files":["crates/kes-protocol/src/lib.rs"],"critical":false},
+        "protocol-codec":{"files":["crates/kes-protocol/src/error.rs","crates/kes-protocol/src/frame.rs","crates/kes-protocol/src/operations.rs"],"critical":true}
+      }
+    }
+  ],
+  "calibration":{"build":"core:protected","target":"lifecycle_properties"}
+}

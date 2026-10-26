@@ -1,0 +1,4 @@
+{
+  "producer":{"build":"core:protected","target":"journal_faults"},
+  "cut_points":["ready-old","ready-new","quarantined"]
+}

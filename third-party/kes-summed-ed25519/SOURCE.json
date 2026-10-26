@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "upstream": {
+    "name": "kes-summed-ed25519",
+    "version": "0.2.1",
+    "repository": "https://github.com/input-output-hk/kes",
+    "git_revision": "57d2f944ae87bc9d9281521f910caf3bf4976a68",
+    "registry_archive_sha256": "7bb27d940b150ff718b407f94ff443915c4bbf938cc813b0164c827b170738fc",
+    "license": "Apache-2.0",
+    "copyright": "2022 IOG",
+    "reviewed_file_sha256": {
+      "Cargo.toml": "e33279011b7afab59c33f25ad6956d489f01f3cf6831f15b0f786afff71c6c18",
+      "src/lib.rs": "c242abbd5ea030591d725d3269b9ba623ec5f09cadd1fa9550e4f0db8ba4da36",
+      "src/common.rs": "f45ace3294be4bde7a62e3801b4453d3a0349700d389384d3e584468fe43f185",
+      "src/kes.rs": "f265ef46012e95de1236aba507f3a82acc569d992c5ca002672656a5d53378df",
+      "src/single_kes.rs": "78ae79a4d26921ab79c0f5eaa90b6101a0edb34e1474c9d9c8342b7e2eff10aa",
+      "src/traits.rs": "95bc11864d99907cb828839e6e012b0e7ab373b5cb44281a86abe25a0a22d38a",
+      "src/errors.rs": "cc9c29c5db31f8270c81e2f7bc156950a05261c76e3332ebbe166118e645dc5e",
+      "LICENSE": "eb2e27a1bb68c293f20af47c4bf2314369c9ecb3b99c281b1815b42be0a07e72"
+    }
+  },
+  "adaptation": {
+    "package": "kes-summed-ed25519-adapted",
+    "version": "0.2.1",
+    "workspace_member": true,
+    "retained_archive_file_subset": [
+      "Cargo.toml",
+      "src/lib.rs",
+      "LICENSE"
+    ],
+    "history": "adaptation.patch applies to this explicit upstream file subset; the new entrypoint folds the cited standard Sum6 production algorithms into a bounded specialization. Unused Compact, serde, RNG, clone/debug secret APIs and upstream examples/tests are not copied. The full original archive identity and relevant original module hashes remain above.",
+    "construction": "Sum6KES, not CompactSum6KES",
+    "primitives": [
+      "blake2=0.9.2 default-features=false, parameterized 32-byte BLAKE2b",
+      "ed25519-dalek=2.2.0 default-features=false, fast+zeroize",
+      "zeroize=1.8.2 default-features=false"
+    ],
+    "verification_key_bytes": 32,
+    "canonical_state_bytes": 608,
+    "signature_bytes": 448,
+    "public_tree_bytes": 4064,
+    "public_tree_layout": "version1, 127 BFS nodes of32 bytes; children2n+1/2n+2, leaves63..126",
+    "period_metadata": "separate checked0..63, not serialized in conventional signing state",
+    "owned_secret_buffers": "fixed-size zeroizing state and generation seed stack; no Debug/Clone/serde",
+    "erasure_limit": "primitive-internal stack/register erasure is not claimed; host secret execution requires protected disposable lab",
+    "source_sha256": {
+      "Cargo.toml": "38c6f84599888751c291ecd4a28583f7a5b282b15e270b8005d7300b6bc25deb",
+      "src/lib.rs": "1c77bf9bdf3a7ddfe661c393e4826da4c1a39551e90119d07d524797abc1292e",
+      "LICENSE": "eb2e27a1bb68c293f20af47c4bf2314369c9ecb3b99c281b1815b42be0a07e72"
+    },
+    "patch_sha256": "5b6858677a6ca3f874c0c98f3d2e9b11430be2d2ee274b410453f4ed4c38b38f"
+  }
+}

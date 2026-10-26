@@ -2,9 +2,109 @@
 name = "cardano-kes-forge"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.99.1"
+autobins = false
+
+[workspace]
+resolver = "3"
+members = [".", "crates/kes-core", "crates/kes-protocol", "firmware", "xtask", "third-party/kes-summed-ed25519"]
+default-members = [".", "crates/kes-core", "crates/kes-protocol", "xtask"]
+exclude = ["third-party/hpke", "third-party/proc-macro-error2"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+
+[workspace.dependencies]
+kes-core = { path = "crates/kes-core", default-features = false }
+kes-protocol = { path = "crates/kes-protocol", default-features = false }
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc", "zeroize"] }
+blake2 = { version = "=0.10.6", default-features = false }
+chacha20poly1305 = { version = "=0.10.1", default-features = false }
+criterion = { version = "=0.8.2", default-features = false, features = ["cargo_bench_support"] }
+cortex-m-rt = { version = "=0.7.7", default-features = false }
+ed25519-dalek = { version = "=2.2.0", default-features = false, features = ["zeroize"] }
+embassy-rp = { version = "=0.10.0", default-features = false, features = ["rp235xa", "rt", "critical-section-impl"] }
+embassy-futures = { version = "=0.1.2", default-features = false }
+embassy-usb = { version = "=0.6.0", default-features = false }
+embassy-sync = { version = "=0.8.0", default-features = false }
+hkdf = { version = "=0.12.4", default-features = false }
+hmac = { version = "=0.12.1", default-features = false }
+# Manifest-only no_std adaptation; cryptographic Rust sources remain upstream.
+hpke = { version = "=0.13.0", default-features = false, features = ["x25519"] }
+# Unmodified host comparison source; T011 owns the separate no_std adaptation.
+kes-summed-ed25519 = { version = "=0.2.1", default-features = false }
+# Separate source identity preserves the unmodified registry comparison oracle.
+kes-summed-ed25519-adapted = { path = "third-party/kes-summed-ed25519", version = "=0.2.1", default-features = false }
+proptest = { version = "=1.11.0", default-features = false, features = ["std"] }
+rand_chacha = { version = "=0.9.0", default-features = false }
+rp-pac = { version = "=7.0.0", default-features = false, features = ["rp235x"] }
+nusb = { version = "=0.2.9", default-features = false }
+rustix = { version = "=1.1.5", default-features = false, features = ["process"] }
+serde = { version = "=1.0.228", default-features = false, features = ["derive"] }
+serde_json = { version = "=1.0.145", default-features = false }
+sha2 = { version = "=0.10.9", default-features = false }
+x25519-dalek = { version = "=2.0.1", default-features = false, features = ["static_secrets", "zeroize"] }
+zeroize = { version = "=1.8.2", default-features = false }
+
+[features]
+default = ["primary"]
+primary = []
+recovery = []
+management = []
+provisioning = []
+development = []
 
 [[bin]]
 name = "kes-forge"
 path = "src/main.rs"
 
+[[bin]]
+name = "kes-forged"
+path = "src/bin/kes-forged.rs"
+required-features = ["primary"]
+
 [dependencies]
+kes-core.workspace = true
+kes-protocol.workspace = true
+argon2.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+hkdf.workspace = true
+hpke.workspace = true
+rand_chacha.workspace = true
+sha2.workspace = true
+x25519-dalek.workspace = true
+zeroize = { workspace = true, features = ["alloc"] }
+nusb.workspace = true
+rustix = { workspace = true, features = ["fs", "mm", "net", "process", "std", "termios"] }
+serde = { workspace = true, features = ["std"] }
+serde_json = { workspace = true, features = ["std"] }
+
+[dev-dependencies]
+criterion.workspace = true
+kes-summed-ed25519.workspace = true
+proptest.workspace = true
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = "thin"
+codegen-units = 1
+overflow-checks = true
+
+[profile.firmware-development]
+inherits = "release"
+debug = 2
+
+[profile.firmware-release]
+inherits = "release"
+lto = "fat"
+strip = "debuginfo"
+
+[patch.crates-io]
+hpke = { path = "third-party/hpke" }
+proc-macro-error2 = { path = "third-party/proc-macro-error2" }

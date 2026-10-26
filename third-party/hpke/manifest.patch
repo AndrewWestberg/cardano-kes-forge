@@ -1,0 +1,50 @@
+--- upstream/hpke-0.13.0/Cargo.toml
++++ third-party/hpke/Cargo.toml
+@@ -71,12 +71,16 @@
+ 
+ [dependencies.aead]
+ version = "0.5"
++default-features = false
+ 
+ [dependencies.aes-gcm]
+ version = "0.10"
++default-features = false
++features = ["aes"]
+ 
+ [dependencies.chacha20poly1305]
+ version = "0.10"
++default-features = false
+ 
+ [dependencies.digest]
+ version = "0.10"
+@@ -178,3 +182,7 @@
+ p521 = ["dep:p521"]
+ std = []
+ x25519 = ["dep:x25519-dalek"]
++
++[package.metadata.kes-forge]
++upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
++adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"
+--- upstream/hpke-0.13.0/Cargo.toml.orig
++++ third-party/hpke/Cargo.toml.orig
+@@ -26,9 +26,9 @@
+ std = []
+ 
+ [dependencies]
+-aead = "0.5"
+-aes-gcm = "0.10"
+-chacha20poly1305 = "0.10"
++aead = { version = "0.5", default-features = false }
++aes-gcm = { version = "0.10", default-features = false, features = ["aes"] }
++chacha20poly1305 = { version = "0.10", default-features = false }
+ generic-array = { version = "0.14", default-features = false }
+ digest = "0.10"
+ hkdf = "0.12"
+@@ -86,3 +86,7 @@
+ 
+ [lib]
+ bench = false
++
++[package.metadata.kes-forge]
++upstream-crate-sha256 = "f65d16b699dd1a1fa2d851c970b0c971b388eeeb40f744252b8de48860980c8f"
++adaptation = "AEAD dependency feature defaults only; Rust cryptographic source unchanged"

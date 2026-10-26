@@ -1,0 +1,34 @@
+{
+  "version": 1,
+  "story": "US3",
+  "campaign": "exploratory-a2-power-cycle",
+  "verdict": "unavailable",
+  "executed": false,
+  "acceptance": false,
+  "observation_source": "operator-provided picotool info -d --debug output",
+  "hardware": {
+    "type": "RP2350",
+    "revision": "A2",
+    "package": "QFN60",
+    "flash_devinfo": "0x0c00",
+    "current_cpu": "ARM",
+    "available_cpus": ["ARM", "RISC-V"],
+    "default_cpu": "ARM",
+    "secure_boot": false,
+    "debug_enable": true,
+    "secure_debug_enable": true,
+    "boot_type": "normal",
+    "last_booted_partition": "none"
+  },
+  "authorization": {
+    "firmware_flash": false,
+    "otp_programming": false,
+    "physical_power_controller": false
+  },
+  "reason": "The attached board is A2 development hardware. No firmware flashing or OTP operation was authorized, no physical power controller is available, and the firmware USB service path is incomplete; no physical cut or reconnect was attempted.",
+  "deferred": {
+    "task": "T108",
+    "requirement": "A4-or-later final frozen candidate, at least 1000 mixed-operation physical cuts, 32 active and staged pools, authorized disposable fixture and separate power controller"
+  },
+  "sensitive_fields_omitted": ["chip_id", "boot_random"]
+}

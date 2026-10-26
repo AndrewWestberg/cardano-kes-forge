@@ -1,0 +1,53 @@
+[package]
+name = "kes-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[features]
+protected-runtime = []
+native-oracles = ["protected-runtime"]
+
+[dependencies]
+blake2.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+hkdf.workspace = true
+hpke.workspace = true
+hmac.workspace = true
+kes-summed-ed25519-adapted.workspace = true
+rand_chacha.workspace = true
+sha2.workspace = true
+x25519-dalek.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+criterion.workspace = true
+proptest.workspace = true
+kes-summed-ed25519.workspace = true
+serde_json.workspace = true
+xtask = { path = "../../xtask" }
+
+[[test]]
+name = "crypto_interop"
+required-features = ["native-oracles"]
+
+[[test]]
+name = "lifecycle_properties"
+required-features = ["protected-runtime"]
+
+[[test]]
+name = "certificate_interop"
+required-features = ["native-oracles"]
+
+[[test]]
+name = "journal_faults"
+required-features = ["protected-runtime"]
+
+[[test]]
+name = "operations"
+required-features = ["protected-runtime"]
+
+[[bench]]
+name = "kes"
+harness = false

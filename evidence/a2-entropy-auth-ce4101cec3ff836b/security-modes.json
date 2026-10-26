@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "campaign": "security-modes-a2-development",
+  "verdict": "development-pass",
+  "silicon_revision": "A2",
+  "otp_mutated": false,
+  "release_qualified": false,
+  "cases": [
+    {
+      "id": "policy",
+      "disposition": "pass",
+      "command": "cargo test --test security_mode_qualification",
+      "output_sha256": "74bc8b8e4adcbb449255e4f1addf826fb2ac8004e62da98358444f36fceb4a23"
+    },
+    {
+      "id": "authenticated-software",
+      "disposition": "pass",
+      "command": "cargo test --test development_bootstrap",
+      "output_sha256": "459a0f611a6440ea655991539c3b333ae69fd39069b6a0a9b637e1d58521d839"
+    },
+    {
+      "id": "authenticated-a2",
+      "disposition": "pass",
+      "command": "cargo test --test a2_development_hardware -- --ignored --exact authenticated_a2_info_open_status_fail_closed_and_reopen",
+      "output_sha256": "04b8f7676b7927d1e14bb2eee1ff47e00d00cd95a37497bf1947bbd63015f444"
+    }
+  ],
+  "deferred_to_a4": [
+    "secure boot",
+    "debug and secure-debug lock",
+    "DMA isolation",
+    "OTP provisioning and lock readback",
+    "signed update, downgrade, rollback, and interrupted update",
+    "release-ready transition and post-lockdown service"
+  ]
+}

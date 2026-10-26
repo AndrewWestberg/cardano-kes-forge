@@ -1,0 +1,4 @@
+{
+  "build":"core:native",
+  "target":{"build":"core:native","target":"crypto_interop"}
+}

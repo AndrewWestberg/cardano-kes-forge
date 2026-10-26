@@ -1,0 +1,20 @@
+cabal-version: 3.0
+name: kes-oracle-node
+version: 1.0.0.0
+build-type: Simple
+license: Apache-2.0
+
+executable kes-oracle-node
+  main-is: Main.hs
+  hs-source-dirs: app
+  default-language: Haskell2010
+  ghc-options: -Wall -Werror -O1
+  build-depends:
+    base >=4.18 && <4.19,
+    aeson,
+    bytestring,
+    cardano-api ==11.6.0.0,
+    cardano-binary,
+    cardano-crypto-class ==2.5.1.0,
+    cardano-protocol,
+    cardano-protocol-tpraos

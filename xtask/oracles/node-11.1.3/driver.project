@@ -1,0 +1,5 @@
+-- Additive local executable; original baseline project/freeze are immutable.
+import: cabal.project
+import: cabal.project.freeze
+packages: .
+write-ghc-environment-files: never
