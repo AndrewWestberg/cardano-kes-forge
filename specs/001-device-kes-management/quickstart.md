@@ -189,7 +189,7 @@ cargo run --locked -p xtask -- package --workspace "$PWD" \
 
 The staged executable must report the exact complete role surface through `--installation-profile`; packaging rejects missing handlers or forbidden role capabilities before publishing a distributable manifest. Only primary includes `kes-forged`. No configurations, private keys, prototype USB rules or operator credentials are copied. Install legitimate allocated USB IDs and least-privilege rules through a separately approved administrator workflow. No build/package command flashes, resets or provisions hardware.
 
-The public manifest hashes staged executables and Cargo inputs and explicitly makes no release-readiness claim. A failed build/validation can retain its owned incomplete staging directory; use a fresh path for retry rather than overwriting it. Management, recovery and development profiles have been staged successfully; the development package includes `dev inspect`. Full primary and provisioning packaging still depend on their missing firmware-update and attended-apply command surfaces, respectively.
+The public manifest hashes staged executables and Cargo inputs and explicitly makes no release-readiness claim. A failed build/validation can retain its owned incomplete staging directory; use a fresh path for retry rather than overwriting it. Management, recovery and development profiles have been staged successfully; the development package includes `dev inspect`. Primary and provisioning packaging validate only handlers that exist: `firmware update` and attended `provision apply` are not implemented, so those profiles currently stage without them. Do not advertise either command as available until T044/T040 supply the device/trust backends.
 
 ### Disposable A2 USB transport preflight
 
@@ -315,7 +315,65 @@ cargo run --locked -p xtask -- qualify security-modes \
 
 The persistent-identity image passed INFO/OPEN/STATUS and invalid-MAC checks on hardware before directory provisioning. Its USB bus-reset regression passed after invalidation was moved into the USB reset callback; an exact enrollment retry also survived a bootrom reboot. These are disposable development observations, not a physical power-cut test. The runner always records `release_qualified=false` and defers secure boot, debug locks, DMA isolation, OTP, signed update/rollback and post-lockdown service to T109 on A4-or-later hardware.
 
-#### Protected current-state inspection
+##### A2 live qualification and performance findings (2026-10-27)
+
+The disposable A2 board was used for the live paths that do not require OTP, secure boot or debug closure. It was already provisioned with a persistent disposable identity and directory; no OTP page was programmed and no lock state was changed. Three further pools were enrolled through the real management workstation flow (`enrollment-create`, offline `management sign`, daemon `management apply`), using the documented public test machine seeds.
+
+Exercised on hardware:
+
+```sh
+cargo test --locked -p cardano-kes-forge --test a2_pool_hardware -- --ignored --exact \
+  independent_pool_open_counters_are_signed_and_advance
+cargo test --locked -p cardano-kes-forge --test a2_pool_hardware -- --ignored --exact \
+  independent_pool_operation_status_sessions_interleave
+cargo test --locked -p cardano-kes-forge --test a2_pool_hardware -- --ignored --exact \
+  cooperative_generation_backup_and_recovery_on_a2
+cargo test --locked -p cardano-kes-forge --test a2_pool_hardware -- --ignored --exact \
+  disposable_pool_certify_activate_evolve_and_sign
+cargo test --locked -p cardano-kes-forge --test a2_pool_hardware -- --ignored --exact \
+  old_incarnation_is_rejected_after_reenrollment
+```
+
+The run covered two concurrent authenticated pool sessions, independent OPEN counters, real device generation, immutable backup retrieval byte-identical on refetch, recipient-side recovery of the 608-byte period-zero key, certification with an externally generated cold signature, activation, evolution to period 1 and a 448-byte signature verified independently by the host.
+
+The same pool was generated through the installed daemon and operator CLI:
+
+```sh
+kes-forge key-gen-KES --connection pool-t.json --request-id "$REQUEST" --generation-number 2 \
+  --verification-key-file gen2.vkey --encrypted-signing-key-file gen2.kes-backup \
+  --generation-file gen2.generation.json
+kes-forge backup fetch --connection pool-t.json --generation "$GENERATION" --out-file gen2.fetch.kes-backup
+```
+
+The first invocation returned `IN_PROGRESS`; retrying the identical request reconciled the committed generation. The fetched artifact was byte-identical to the published one.
+
+A release-mode warm signing campaign was run on the A2 at stock clock with maximum 4096-byte messages:
+
+```sh
+KES_A2_AUTHORIZE_DISPOSABLE_LOAD=yes KES_A2_LOAD_REQUESTS=1000 \
+KES_A2_LOAD_MESSAGE_BYTES=4096 KES_A2_LOAD_MACHINE_SEED=a8 \
+KES_A2_LOAD_ENROLLMENT_AUTHORIZATION=/absolute/lab/enrollment.authorization.cbor \
+KES_A2_LOAD_EVIDENCE=/absolute/lab/a2-load-1000.json \
+  cargo test --release --locked -p cardano-kes-forge --test a2_load_hardware \
+  -- --ignored --exact a2_warm_signing_latency_campaign --nocapture
+```
+
+Observed: 1000/1000 signatures independently verified; mean 315.2 ms, p50 315 ms, p95/p99 316 ms; no request met the 100-ms SC-003 bound. A 32-byte control produced 190 ms mean, a 1024-byte (block-header-sized) run produced mean 226.5 ms with p99 227 ms, and pure STATUS round trips took 90 ms. This is a **failed P1 feasibility reading on A2**, not a passing load qualification and not an A4 substitution. It identifies transport/device processing as the dominant cost and requires an explicit requirement/hardware decision; thresholds were not lowered.
+
+A replacement generation was then rotated through the operator CLI on the same pool: `certify` accepted the externally issued certificate (counter 1, start 0), `schedule --activation-period 2` persisted a staged intent, a daemon restart retained that intent, and `activate --current-period 2` made generation 2 active while leaving no staged generation. This exercised the durable intent and activation transitions on hardware; it does not satisfy SC-006's unattended period-observation requirement because no node period source was connected.
+
+The device-generated generation and its recovered conventional key were then compared through both pinned unmodified oracles:
+
+```sh
+cargo run --release -p xtask -- qualify interop \
+  --fixture /absolute/lab/interop2-inputs.json --evidence /absolute/lab/interop2-evidence
+```
+
+Observed verdict `offline-native-interop-pass-device-network-campaign-pending`: the CLI 11.4.0.0 certificate (counter 1, start 0) validated in both oracles, all 64 evolution periods produced independently accepted signatures, altered messages/keys and a corrupted certificate were rejected, and the recovered 608-byte state remained identical to the artifact/VK. The runner's `complete_t051:false` records that live device certification and network authorization of this exact generation were not part of the offline comparison.
+
+`old_incarnation_is_rejected_after_reenrollment` passed after re-enrolling the pool with the documented fresh machine seed and a new incarnation: the stale OPEN failed closed and the fresh incarnation opened successfully. The earlier timeout was a fixture mismatch (the fresh pool had the old machine seed), not a firmware defect. All A2 results are exploratory, unlocked, disposable-key evidence; release acceptance still requires A4-or-later silicon and the unchanged physical campaigns.
+
+### Protected current-state inspection
 
 Stop the daemon so the disposable device can be claimed directly. Build the separate development profile and run it on the trusted development workstation in a fresh cgroup-v2 unit with swap disabled and core dumps prohibited:
 
@@ -703,7 +761,15 @@ Build one mixed bulk file with at least one legacy file-backed tuple and one exp
   --database-path "$NODE_DB" --socket-path "$NODE_SOCKET" --bulk-credentials-file "$MIXED_BULK"
 ```
 
-The mixed-node and telemetry qualification runners are not yet implemented. Use the actual node commands and credential-file construction in [the node contract](contracts/node-integration.md) for manual development exercises; do not treat a node startup or local signature as accepted-block or telemetry qualification. T066 and T088 remain open.
+The implemented runners validate the public 32-pool scenario, exercise the host software paths, and report every live reading they cannot take:
+
+```sh
+cargo run --locked -p xtask -- qualify node --fixture "$FIXTURE" --evidence "$EVIDENCE"
+cargo run --locked -p xtask -- qualify backup-producer --fixture "$FIXTURE" --evidence "$EVIDENCE"
+cargo run --locked -p xtask -- qualify telemetry --evidence "$EVIDENCE"
+```
+
+`qualify node` runs the real signing-routing, daemon-signing and reconnect-recovery suites; `backup-producer` validates the scenario and records the same-certificate intervals as unavailable; `qualify telemetry` runs the host observation/latency suite. None substitutes for accepted blocks, outage isolation, native tracer comparison or an offline CLI query. Do not treat a node startup or local signature as accepted-block or telemetry qualification. T066/T088 remain open until those live readings exist.
 
 Require independent accepted-block evidence for both sources in this same process; disconnect device during actual signing and verify file-backed opportunities/synchronization continue, no fallback/invalid block is submitted, and reconnect resumes device-backed blocks with unchanged PID. Also exercise unchanged legacy bulk and all three singleton sources; reject a bulk kes-agent entry and entry-specific configuration conflicts.
 
@@ -739,7 +805,12 @@ cargo run --locked -p xtask -- qualify power-loss-software --evidence "$EVIDENCE
 cargo run --locked -p xtask -- qualify management-software --evidence "$EVIDENCE"
 cargo run --locked -p xtask -- qualify recovery-files --fixture "$FIXTURE" --evidence "$EVIDENCE"
 cargo run --locked -p xtask -- qualify security --fixture "$FIXTURE" --evidence "$EVIDENCE"
+cargo run --locked -p xtask -- qualify generation --evidence "$EVIDENCE"
+cargo run --locked -p xtask -- qualify rotation --evidence "$EVIDENCE"
+cargo run --locked -p xtask -- qualify replacement --evidence "$EVIDENCE"
 ```
+
+The software campaigns execute real test targets and publish both the transcripts and an explicit unavailable list. `generation` covers CLI generation/publication and daemon admission; `rotation` covers activation, scheduling and public status; `replacement` covers recovery/offline-producer behavior (run it in the protected no-swap unit). Their verdicts are `software-pass-measurement-unavailable`, never release acceptance. `security` validates the public scenario and host mode/custody behavior, then lists every A4 protection and negative check it could not observe.
 
 Full scenarios/thresholds are centralized in the quality-gate contract. Include32 active+32 staged, aligned midpoint evolution, background generation with one staged vacancy, status under saturation,33rd registration rejection, replay/cross-pool faults and physical torn writes. A software run or dev board does not pass physical release qualification. Irrecoverable-corruption tests must fail closed and are not counted among successful ordinary power-loss recovery trials.
 
@@ -779,6 +850,6 @@ cargo run --locked -p xtask -- qualify public-network --network preview --fixtur
 cargo run --locked -p xtask -- qualify public-network --network preprod --fixture "$PREPROD_FIXTURE" --evidence "$EVIDENCE"
 ```
 
-Provide test delegation/leader opportunities and independent observers. Full-capacity physical qualification and independent security review precede operator-approved mainnet use. Record actual elapsed periods/accepted blocks, separate primary/backup intervals and rotation/recovery. Missing opportunities, hardware or valid gate reports is an explicit blocked qualification, not success.
+`qualify operators` and `qualify public-network` validate the public scenario and record trial inventories. They deliberately publish `measurement-unavailable` until real operators or actual preview/preprod opportunities exist; a validated fixture is not a trial. Provide test delegation/leader opportunities and independent observers. Full-capacity physical qualification and independent security review precede operator-approved mainnet use. Record actual elapsed periods/accepted blocks, separate primary/backup intervals and rotation/recovery. Missing opportunities, hardware or valid gate reports is an explicit blocked qualification, not success.
 
 At completion, remove disposable secret inspection/recovery files from the private fixture workstation under its secure-storage policy; retain only public revision-linked evidence and separately archived legitimate backup artifacts/recipient keys where intended. Do not claim file deletion erases external copied secrets or guarantees physical SSD erasure.

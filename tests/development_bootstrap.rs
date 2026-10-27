@@ -1,3 +1,4 @@
+#![allow(unexpected_cfgs)] // firmware sources use target-only feature names
 #[allow(dead_code)]
 #[path = "../firmware/src/security/gateway.rs"]
 mod gateway_impl;
@@ -17,7 +18,10 @@ mod usb {
 }
 #[allow(dead_code)]
 #[path = "../firmware/src/development.rs"]
-mod development;
+pub mod development;
+#[allow(dead_code)]
+#[path = "../firmware/src/pool_service.rs"]
+mod pool_service;
 
 use cardano_kes_forge::host::client::{AuthenticatedClient, DeviceWire, Error as ClientError};
 use development::{DevelopmentEvidence, DevelopmentHandler};

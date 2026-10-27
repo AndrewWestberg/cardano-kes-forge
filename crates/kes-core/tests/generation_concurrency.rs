@@ -1,4 +1,3 @@
-
 use kes_core::{
     activation::{ActivationRequest, CertificationRequest},
     cbor::Value,
@@ -321,7 +320,9 @@ fn recipient_or_credential_epoch_change_cancels_delayed_completion() {
                 key,
                 &verified,
                 DeviceId::from_bytes([0x92; 16]),
-                &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x93; 32])),
+                &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new(
+                    [0x93; 32],
+                )),
                 &mut rng,
                 &mut store,
                 &mut [0; MAX_PUBLIC_OBJECT_BYTES],

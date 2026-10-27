@@ -104,9 +104,17 @@ pub fn run(binary: &str) -> ExitCode {
 fn installation_commands() -> &'static [&'static str] {
     if cfg!(feature = "development") {
         &[
-            "key-gen-KES", "status", "certify", "activate", "schedule", "backup fetch",
-            "credential create", "management enrollment-create", "management prepare",
-            "management apply", "dev inspect",
+            "key-gen-KES",
+            "status",
+            "certify",
+            "activate",
+            "schedule",
+            "backup fetch",
+            "credential create",
+            "management enrollment-create",
+            "management prepare",
+            "management apply",
+            "dev inspect",
         ]
     } else if cfg!(feature = "primary") {
         &[

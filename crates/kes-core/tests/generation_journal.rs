@@ -196,7 +196,8 @@ fn lost_ack_restart_explicit_retry_and_exactly_one_committed_generation() {
         .is_err()
     );
     assert!(pool.is_usable());
-    let mut job = generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
+    let mut job =
+        generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
@@ -218,7 +219,9 @@ fn lost_ack_restart_explicit_retry_and_exactly_one_committed_generation() {
                     key,
                     &verified,
                     DeviceId::from_bytes([0x23; 16]),
-                    &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x23; 32])),
+                    &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new(
+                        [0x23; 32],
+                    )),
                     rng,
                     &mut store,
                     &mut write,
@@ -503,8 +506,7 @@ fn authenticated_policy_change_cancels_checkpoint_and_refuses_old_epoch_restart(
     };
     let identity = operation.generation();
     let mut workspace = KesKey::erased(KesLifetime::new(64).unwrap());
-    let mut job =
-        generation::begin_key_generation(&mut f.entropy, workspace.lifetime()).unwrap();
+    let mut job = generation::begin_key_generation(&mut f.entropy, workspace.lifetime()).unwrap();
     job.step().unwrap();
     drop(job); // real incomplete crypto workspace is wiped, never persisted
     drop(pool);
@@ -645,7 +647,8 @@ fn publication_commit_power_cuts_restore_atomic_descriptor_and_checkpoint() {
         };
         let identity = operation.generation();
         let mut job =
-            generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
+            generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap())
+                .unwrap();
         for _ in 0..64 {
             job.step().unwrap();
         }
@@ -665,7 +668,9 @@ fn publication_commit_power_cuts_restore_atomic_descriptor_and_checkpoint() {
                         key,
                         &verified,
                         DeviceId::from_bytes([0x23; 16]),
-                        &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x23; 32])),
+                        &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new(
+                            [0x23; 32],
+                        )),
                         rng,
                         &mut store,
                         &mut [0; 6144],
@@ -803,7 +808,8 @@ fn completion_merges_newer_durable_active_period_without_rollback() {
             &active_tree,
         )
         .unwrap();
-    let mut job = generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
+    let mut job =
+        generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
@@ -824,7 +830,9 @@ fn completion_merges_newer_durable_active_period_without_rollback() {
                     key,
                     &verified,
                     DeviceId::from_bytes([0x19; 16]),
-                    &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x19; 32])),
+                    &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new(
+                        [0x19; 32],
+                    )),
                     rng,
                     &mut store,
                     &mut [0; 6144],

@@ -215,7 +215,7 @@ pub fn execute<F: Flash, R: TryCryptoRng>(
         let committed = journal
             .transact_successor(flash, rng, &current.token, &current.state, work)
             .map_err(DeletionError::Journal)?;
-        drop(current);
+        let _ = current;
         let readback = journal
             .recover(flash, rng, work)
             .map_err(DeletionError::Journal)?;

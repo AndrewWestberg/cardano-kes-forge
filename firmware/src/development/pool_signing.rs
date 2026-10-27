@@ -21,6 +21,9 @@ use kes_protocol::{Envelope, ErrorScope, MAX_MESSAGE_BYTES, Operation, Status};
 use rand_chacha::rand_core::TryCryptoRng;
 
 /// Only public results leave the durable owner. Expiry never includes a signature.
+/// The signed variant stays inline: firmware has no allocator, and the complete
+/// bounded result already fits the dispatch workspace.
+#[allow(clippy::large_enum_variant)]
 pub enum Outcome {
     Signed(SigningResult),
     Evolved(OperationContext),

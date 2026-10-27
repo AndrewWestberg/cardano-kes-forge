@@ -247,7 +247,9 @@ fn stage_replacement_and_expire(
         generation.step().unwrap();
     }
     let (replacement_key, replacement_tree) = generation.finish().unwrap();
-    let replacement_cache = replacement_tree.verify(&replacement_key.verification_key().unwrap()).unwrap();
+    let replacement_cache = replacement_tree
+        .verify(&replacement_key.verification_key().unwrap())
+        .unwrap();
     let replacement_vk = replacement_key.verification_key().unwrap();
     let replacement_id = GenerationId::from_bytes([0x92; 16]);
     let replacement_object = PublicObject::from_parts(

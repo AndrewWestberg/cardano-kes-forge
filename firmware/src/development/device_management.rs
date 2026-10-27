@@ -123,7 +123,7 @@ pub fn execute<F: Flash, R: TryCryptoRng>(
         .transact_successor(flash, rng, &current.token, &current.state, work)
         .map_err(DeviceManagementError::Journal)?;
     let expected_credential = current.state.credential;
-    drop(current);
+    let _ = current;
     // CLEAN and old-bank erasure have completed. Authenticate the stored state
     // again rather than returning an acknowledgement from the RAM successor.
     let readback = journal

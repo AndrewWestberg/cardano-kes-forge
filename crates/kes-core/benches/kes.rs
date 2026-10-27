@@ -143,7 +143,8 @@ fn benchmark_generation(criterion: &mut Criterion) {
         bench.iter_batched(
             || [0x31; 32],
             |mut seed| {
-                let mut generation = Generation::begin(&mut seed, KesLifetime::new(PERIODS).unwrap()).unwrap();
+                let mut generation =
+                    Generation::begin(&mut seed, KesLifetime::new(PERIODS).unwrap()).unwrap();
                 for _ in 0..PERIODS {
                     black_box(generation.step().unwrap());
                 }

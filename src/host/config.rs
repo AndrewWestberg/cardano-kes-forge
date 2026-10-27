@@ -623,7 +623,22 @@ fn read_bounded(file: File) -> Result<Vec<u8>, Error> {
 
 fn validate_path_ancestry(path: &Path, private: bool) -> Result<(), Error> {
     let uid = rustix::process::getuid().as_raw();
-    let mut current = containing_directory(path);
+    // Normalize before walking: `Path::new(".").parent()` yields an empty path,
+    // whose parent is again `"."`, which would spin forever on a relative input.
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|_| Error::Unreadable)?
+            .join(path)
+    };
+    if absolute
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return Err(Error::Security);
+    }
+    let mut current = containing_directory(&absolute);
     let mut immediate = true;
     loop {
         let metadata = std::fs::symlink_metadata(current).map_err(|_| Error::Unreadable)?;
@@ -772,5 +787,19 @@ fn nibble(value: u8) -> Option<u8> {
         b'0'..=b'9' => Some(value - b'0'),
         b'a'..=b'f' => Some(value - b'a' + 10),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_configuration_paths_terminate_ancestry_validation() {
+        // The repository root may itself be group-writable, so only termination
+        // and traversal rejection are stable here; before the fix this call
+        // spun forever on `"." -> "" -> "."`.
+        let _ = validate_path_ancestry(Path::new("kes.sock"), false);
+        assert!(validate_path_ancestry(Path::new("../kes.sock"), false).is_err());
     }
 }

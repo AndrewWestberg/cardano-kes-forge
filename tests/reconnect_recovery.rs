@@ -94,7 +94,15 @@ fn serve(socket: &Path, connection: &'static str, replies: Vec<Reply>) -> thread
                 Reply::Drop => {
                     assert_eq!(request_id, REQUEST);
                     assert_eq!(request.operation, Operation::Generate);
-                    assert_eq!(request.payload().required("expected_revision").unwrap().uint().unwrap(), 5);
+                    assert_eq!(
+                        request
+                            .payload()
+                            .required("expected_revision")
+                            .unwrap()
+                            .uint()
+                            .unwrap(),
+                        5
+                    );
                 }
                 Reply::Malformed => {
                     assert_eq!(request.operation, Operation::OpStatus);
@@ -208,8 +216,13 @@ fn lost_generate_ack_reconciles_authoritative_status_without_replaying_mutation(
             },
         ],
     );
-    let result =
-        client::generate(&connection(socket, CONNECTION), REQUEST, GENERATION_NUMBER, 5).unwrap();
+    let result = client::generate(
+        &connection(socket, CONNECTION),
+        REQUEST,
+        GENERATION_NUMBER,
+        5,
+    )
+    .unwrap();
     assert_eq!(result.generation, GENERATION);
     assert_eq!(result.creation_request, REQUEST);
     assert_eq!(result.generation_number, GENERATION_NUMBER);

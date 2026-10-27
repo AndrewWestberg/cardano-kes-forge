@@ -164,59 +164,63 @@ fn persistent_status_authenticates_complete_live_directory_and_response_sequence
             payload.required("health").unwrap().text().unwrap(),
             "healthy"
         );
-        let entries: Vec<_> = payload
-            .required("directory")
-            .unwrap()
-            .array()
-            .unwrap()
-            .collect();
-        assert_eq!(entries.len(), 2);
-        for (entry, expected) in entries.iter().zip(persistent.status.pools.iter().flatten()) {
-            let entry = entry.map().unwrap();
-            assert_eq!(
-                entry.required("pool").unwrap().bytes().unwrap(),
-                expected.pool.as_bytes()
-            );
-            assert_eq!(
-                entry.required("incarnation").unwrap().bytes().unwrap(),
-                expected.incarnation.as_bytes()
-            );
-            assert_eq!(
-                entry.required("revision").unwrap().uint().unwrap(),
-                expected.revision
-            );
-            assert_eq!(
-                entry.required("credential_epoch").unwrap().uint().unwrap(),
-                expected.credential_epoch
-            );
-            assert_eq!(
-                entry
-                    .required("management_sequence")
-                    .unwrap()
-                    .uint()
-                    .unwrap(),
-                expected.management_sequence
-            );
-            assert_eq!(
-                entry.required("revoked").unwrap().boolean().unwrap(),
-                expected.revoked
-            );
-            assert_eq!(
-                entry.required("deleted").unwrap().boolean().unwrap(),
-                expected.deleted
-            );
-            assert_eq!(entry.required("health").unwrap().text().unwrap(), "healthy");
-            for (key, generation) in [("active", expected.active), ("staged", expected.staged)] {
-                let value = entry.required(key).unwrap();
-                match generation {
-                    Some(generation) => assert_eq!(value.bytes().unwrap(), generation.as_bytes()),
-                    None => assert!(value.is_null()),
-                }
-            }
-        }
+        assert_directory(payload, &persistent);
         if sequence == 1 {
             let replay = dispatch(&mut dispatcher, &mut persistent, &request, 350).unwrap_err();
             assert_eq!(replay.status, Status::Replay);
+        }
+    }
+}
+
+fn assert_directory(payload: Map<'_>, persistent: &Persistent) {
+    let entries: Vec<_> = payload
+        .required("directory")
+        .unwrap()
+        .array()
+        .unwrap()
+        .collect();
+    assert_eq!(entries.len(), 2);
+    for (entry, expected) in entries.iter().zip(persistent.status.pools.iter().flatten()) {
+        let entry = entry.map().unwrap();
+        assert_eq!(
+            entry.required("pool").unwrap().bytes().unwrap(),
+            expected.pool.as_bytes()
+        );
+        assert_eq!(
+            entry.required("incarnation").unwrap().bytes().unwrap(),
+            expected.incarnation.as_bytes()
+        );
+        assert_eq!(
+            entry.required("revision").unwrap().uint().unwrap(),
+            expected.revision
+        );
+        assert_eq!(
+            entry.required("credential_epoch").unwrap().uint().unwrap(),
+            expected.credential_epoch
+        );
+        assert_eq!(
+            entry
+                .required("management_sequence")
+                .unwrap()
+                .uint()
+                .unwrap(),
+            expected.management_sequence
+        );
+        assert_eq!(
+            entry.required("revoked").unwrap().boolean().unwrap(),
+            expected.revoked
+        );
+        assert_eq!(
+            entry.required("deleted").unwrap().boolean().unwrap(),
+            expected.deleted
+        );
+        assert_eq!(entry.required("health").unwrap().text().unwrap(), "healthy");
+        for (key, generation) in [("active", expected.active), ("staged", expected.staged)] {
+            let value = entry.required(key).unwrap();
+            match generation {
+                Some(generation) => assert_eq!(value.bytes().unwrap(), generation.as_bytes()),
+                None => assert!(value.is_null()),
+            }
         }
     }
 }

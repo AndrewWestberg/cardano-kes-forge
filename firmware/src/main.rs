@@ -2,20 +2,26 @@
 #![no_std]
 #![forbid(unsafe_code)]
 
-use core::{cell::RefCell, panic::PanicInfo};
+#[cfg(any(feature = "development", feature = "release"))]
+use core::cell::RefCell;
+use core::panic::PanicInfo;
 
 use cortex_m_rt::entry;
+#[cfg(any(feature = "development", feature = "release"))]
 use embassy_rp::flash::Flash as HalFlash;
+#[cfg(any(feature = "development", feature = "release"))]
 use embassy_sync::blocking_mutex::{Mutex, raw::ThreadModeRawMutex};
 #[cfg(feature = "development")]
 use kes_core::types::DeviceId;
 #[cfg(feature = "development")]
 use kes_firmware::{entropy::EntropyError, security::gateway::GatewayError};
+#[cfg(any(feature = "development", feature = "release"))]
 use kes_firmware::{
     entropy::HealthCheckedEntropy, security::gateway::DeviceKeys, storage::FittedFlash,
     usb::UsbDispatcher,
 };
 
+#[cfg(any(feature = "development", feature = "release"))]
 struct Runtime<'d> {
     _flash: FittedFlash<'d>,
     _entropy: HealthCheckedEntropy<'d>,
@@ -24,9 +30,11 @@ struct Runtime<'d> {
 
 // Frame storage is static, not charged to either core's bounded stack. Only
 // core0 thread mode may enter this owner; interrupt handlers and core1 do not.
+#[cfg(any(feature = "development", feature = "release"))]
 static USB_DISPATCHER: Mutex<ThreadModeRawMutex, RefCell<UsbDispatcher>> =
     Mutex::new(RefCell::new(UsbDispatcher::new()));
 
+#[cfg(any(feature = "development", feature = "release"))]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum BootError {
     #[cfg(feature = "development")]
@@ -40,6 +48,7 @@ enum BootError {
 }
 
 #[cfg(feature = "development")]
+#[cfg(any(feature = "development", feature = "release"))]
 impl From<EntropyError> for BootError {
     fn from(_: EntropyError) -> Self {
         Self::Entropy
@@ -47,12 +56,14 @@ impl From<EntropyError> for BootError {
 }
 
 #[cfg(feature = "development")]
+#[cfg(any(feature = "development", feature = "release"))]
 impl From<GatewayError> for BootError {
     fn from(_: GatewayError) -> Self {
         Self::Gateway
     }
 }
 
+#[cfg(any(feature = "development", feature = "release"))]
 #[entry]
 fn main() -> ! {
     let peripherals = embassy_rp::init(Default::default());
@@ -82,6 +93,7 @@ fn main() -> ! {
 }
 
 #[cfg(feature = "development")]
+#[cfg(any(feature = "development", feature = "release"))]
 fn boot_development<'d>(
     flash: FittedFlash<'d>,
     mut entropy: HealthCheckedEntropy<'d>,
@@ -99,6 +111,7 @@ fn boot_development<'d>(
 }
 
 #[cfg(feature = "release")]
+#[cfg(any(feature = "development", feature = "release"))]
 fn boot_release<'d>(
     _flash: FittedFlash<'d>,
     _entropy: HealthCheckedEntropy<'d>,
@@ -106,6 +119,16 @@ fn boot_release<'d>(
     // Release startup never substitutes an ephemeral root. T041 supplies the
     // reviewed OTP layout, lock/readback policy and release-readiness evidence.
     Err(BootError::SecurityNotReady)
+}
+
+#[cfg(not(any(feature = "development", feature = "release")))]
+#[entry]
+fn main() -> ! {
+    // A2/preflight images have their own entrypoints; this generic binary must
+    // still link (do nothing) if the workspace builds every default target.
+    // Keep the RP2350 PAC linked so cortex-m-rt finds its interrupt vector table.
+    core::hint::black_box(rp_pac::NVIC_PRIO_BITS);
+    fail_stop()
 }
 
 fn fail_stop() -> ! {

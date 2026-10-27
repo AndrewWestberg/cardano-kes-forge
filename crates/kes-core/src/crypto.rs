@@ -242,6 +242,12 @@ impl Generation {
     }
     pub fn finish(self) -> Result<(KesKey, PublicTreeBuffer), CryptoError> {
         let (state, tree) = self.inner.finish()?;
-        Ok((KesKey { state, lifetime: self.lifetime }, tree))
+        Ok((
+            KesKey {
+                state,
+                lifetime: self.lifetime,
+            },
+            tree,
+        ))
     }
 }

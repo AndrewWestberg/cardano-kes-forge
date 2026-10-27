@@ -27,10 +27,7 @@ pub fn run(arguments: Vec<OsString>) -> ExitCode {
                         result["ready"],
                         result["remainingValidityPeriods"]
                     );
-                    println!(
-                        "Active: {}; staged: {}",
-                        result["active"], result["staged"]
-                    );
+                    println!("Active: {}; staged: {}", result["active"], result["staged"]);
                     for operation in crate::host::latency::Operation::ALL {
                         let name = operation.as_str();
                         let measurement = &result["latency"][name];

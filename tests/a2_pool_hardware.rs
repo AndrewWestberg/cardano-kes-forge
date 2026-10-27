@@ -308,17 +308,27 @@ fn independent_pool_operation_status_sessions_interleave() {
     unknown_operation(&mut wire, &mut second, device, pools[1], 1);
 }
 
+struct PoolOperation<'a> {
+    name: &'a str,
+    request: RequestId,
+    payload: &'a [u8],
+    budget_ms: u64,
+}
+
 fn pool_operation(
     wire: &mut UsbWire,
     host: &mut HostSession,
     device: DeviceId,
     scope: (PoolId, IncarnationId),
     sequence: u64,
-    operation: &str,
-    request: RequestId,
-    payload: &[u8],
-    budget_ms: u64,
+    operation: PoolOperation<'_>,
 ) -> Vec<u8> {
+    let PoolOperation {
+        name: operation,
+        request,
+        payload,
+        budget_ms,
+    } = operation;
     let session = *host.session_id();
     let message = |mac: [u8; 32]| {
         encode(|e| {
@@ -413,10 +423,15 @@ fn cooperative_generation_backup_and_recovery_on_a2() {
         device,
         pools[0],
         0,
-        "GENERATE",
-        CREATION,
-        &generate_payload,
-        600_000,
+        PoolOperation {
+            name: "GENERATE",
+
+            request: CREATION,
+
+            payload: &generate_payload,
+
+            budget_ms: 600_000,
+        },
     );
     let ack = Envelope::parse(&ack, EnvelopeKind::DeviceResponse).unwrap();
     assert!(matches!(ack.status.unwrap().as_str(), "IN_PROGRESS" | "OK"));
@@ -440,10 +455,15 @@ fn cooperative_generation_backup_and_recovery_on_a2() {
             device,
             pools[0],
             sequence,
-            "OP_STATUS",
-            RequestId::from_bytes(random()),
-            &status_payload,
-            2_000,
+            PoolOperation {
+                name: "OP_STATUS",
+
+                request: RequestId::from_bytes(random()),
+
+                payload: &status_payload,
+
+                budget_ms: 2_000,
+            },
         );
         sequence += 1;
         let envelope = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
@@ -497,10 +517,15 @@ fn cooperative_generation_backup_and_recovery_on_a2() {
             device,
             pools[0],
             sequence,
-            "GET_BACKUP",
-            RequestId::from_bytes(random()),
-            &backup_payload,
-            2_000,
+            PoolOperation {
+                name: "GET_BACKUP",
+
+                request: RequestId::from_bytes(random()),
+
+                payload: &backup_payload,
+
+                budget_ms: 2_000,
+            },
         );
         sequence += 1;
         let envelope = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
@@ -533,10 +558,15 @@ fn cooperative_generation_backup_and_recovery_on_a2() {
         device,
         pools[0],
         sequence,
-        "STATUS",
-        RequestId::from_bytes(random()),
-        &[0xa0],
-        2_000,
+        PoolOperation {
+            name: "STATUS",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &[0xa0],
+
+            budget_ms: 2_000,
+        },
     );
     let status = Envelope::parse(&status, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(status.status.unwrap().as_str(), "OK");
@@ -650,10 +680,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "STATUS",
-        RequestId::from_bytes(random()),
-        &[0xa0],
-        2000,
+        PoolOperation {
+            name: "STATUS",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &[0xa0],
+
+            budget_ms: 2000,
+        },
     );
     sequence += 1;
     let status = Envelope::parse(&status, EnvelopeKind::DeviceResponse).unwrap();
@@ -716,10 +751,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
                 device,
                 pools[0],
                 sequence,
-                "CERTIFY",
-                RequestId::from_bytes(random()),
-                &payload,
-                2_000,
+                PoolOperation {
+                    name: "CERTIFY",
+
+                    request: RequestId::from_bytes(random()),
+
+                    payload: &payload,
+
+                    budget_ms: 2_000,
+                },
             );
             sequence += 1;
             let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
@@ -759,10 +799,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
             device,
             pools[0],
             sequence,
-            "ACTIVATE",
-            RequestId::from_bytes(random()),
-            &payload,
-            2_000,
+            PoolOperation {
+                name: "ACTIVATE",
+
+                request: RequestId::from_bytes(random()),
+
+                payload: &payload,
+
+                budget_ms: 2_000,
+            },
         );
         sequence += 1;
         let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
@@ -811,10 +856,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "EVOLVE",
-        RequestId::from_bytes(random()),
-        &evolve,
-        2_000,
+        PoolOperation {
+            name: "EVOLVE",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &evolve,
+
+            budget_ms: 2_000,
+        },
     );
     sequence += 1;
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
@@ -854,10 +904,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "SIGN",
-        RequestId::from_bytes(random()),
-        &sign,
-        500,
+        PoolOperation {
+            name: "SIGN",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &sign,
+
+            budget_ms: 500,
+        },
     );
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(reply.status.unwrap().as_str(), "OK");
@@ -943,10 +998,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "SIGN",
-        RequestId::from_bytes(random()),
-        &wrong_network,
-        500,
+        PoolOperation {
+            name: "SIGN",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &wrong_network,
+
+            budget_ms: 500,
+        },
     );
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(reply.status.unwrap().as_str(), "WRONG_NETWORK");
@@ -964,10 +1024,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "GENERATE",
-        RequestId::from_bytes(random()),
-        &stale_generation,
-        600_000,
+        PoolOperation {
+            name: "GENERATE",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &stale_generation,
+
+            budget_ms: 600_000,
+        },
     );
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(reply.status.unwrap().as_str(), "REVISION_CONFLICT");
@@ -978,10 +1043,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "SIGN",
-        RequestId::from_bytes(random()),
-        &sign,
-        500,
+        PoolOperation {
+            name: "SIGN",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &sign,
+
+            budget_ms: 500,
+        },
     );
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(reply.status.unwrap().as_str(), "OK");
@@ -1014,10 +1084,15 @@ fn disposable_pool_certify_activate_evolve_and_sign() {
         device,
         pools[0],
         sequence,
-        "OBSERVE_PERIOD",
-        RequestId::from_bytes(random()),
-        &observe,
-        2_000,
+        PoolOperation {
+            name: "OBSERVE_PERIOD",
+
+            request: RequestId::from_bytes(random()),
+
+            payload: &observe,
+
+            budget_ms: 2_000,
+        },
     );
     let reply = Envelope::parse(&reply, EnvelopeKind::DeviceResponse).unwrap();
     assert_eq!(reply.status.unwrap().as_str(), "OK");

@@ -19,8 +19,8 @@ pub mod security;
 
 pub mod storage;
 
-pub mod usb;
 pub mod update;
+pub mod usb;
 #[cfg(not(target_arch = "arm"))]
 compile_error!("kes-firmware requires the thumbv8m.main-none-eabihf target");
 #[cfg(not(target_os = "none"))]

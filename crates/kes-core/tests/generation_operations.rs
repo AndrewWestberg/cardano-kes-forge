@@ -1,4 +1,3 @@
-
 use kes_core::cbor::Value;
 use kes_core::generation::{
     Admission, CheckpointOutcome, Error, GenerationCoordinator, GenerationRequest, OperationStatus,

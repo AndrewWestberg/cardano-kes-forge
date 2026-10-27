@@ -342,15 +342,13 @@ impl AuthenticatedClient {
             payload,
             &mac,
         )
-        .map_err(|error| {
+        .inspect_err(|_| {
             self.valid = false;
-            error
         })?;
         let length = wire
             .exchange(&bytes[..length], response, timeout)
-            .map_err(|error| {
+            .inspect_err(|_| {
                 self.valid = false;
-                error
             })?;
         let reply =
             Envelope::parse(&response[..length], EnvelopeKind::DeviceResponse).map_err(|_| {

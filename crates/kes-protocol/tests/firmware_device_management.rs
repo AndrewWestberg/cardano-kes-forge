@@ -186,16 +186,26 @@ impl Fixture {
     }
 }
 
-fn wire(
-    root: &SigningKey,
+struct WireOperation {
     action: Action,
     sequence: u64,
     revision: u64,
     epoch: u64,
+}
+
+fn wire(
+    root: &SigningKey,
+    operation: WireOperation,
     device: DeviceId,
     target: Target,
     request: u8,
 ) -> Vec<u8> {
+    let WireOperation {
+        action,
+        sequence,
+        revision,
+        epoch,
+    } = operation;
     let replacement = SigningKey::from_bytes(&[10; 32]).verifying_key().to_bytes();
     let mut payload = [0; 256];
     let mut e = Encoder::new(&mut payload);
@@ -286,10 +296,15 @@ fn replacement_revocation_and_exact_replay_are_durable_without_touching_pools() 
     let authority = f.recover();
     let replace = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 0,
+
+            epoch: 1,
+        },
         DEVICE,
         Target::Device,
         12,
@@ -313,10 +328,15 @@ fn replacement_revocation_and_exact_replay_are_durable_without_touching_pools() 
     assert_eq!(f.run(&authority, &replace), Err(Error::StaleAuthority));
     let revoke = wire(
         &f.root,
-        Action::CredentialRevoke,
-        2,
-        1,
-        2,
+        WireOperation {
+            action: Action::CredentialRevoke,
+
+            sequence: 2,
+
+            revision: 1,
+
+            epoch: 2,
+        },
         DEVICE,
         Target::Device,
         13,
@@ -338,30 +358,42 @@ fn forged_wrong_device_scope_revision_and_changed_replay_fail_closed() {
     let authority = f.recover();
     let forged = wire(
         &SigningKey::from_bytes(&[99; 32]),
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 0,
+
+            epoch: 1,
+        },
         DEVICE,
         Target::Device,
         12,
     );
     let wrong_device = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 0,
+
+            epoch: 1,
+        },
         DeviceId::from_bytes([99; 16]),
         Target::Device,
         12,
     );
     let wrong_scope = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+            sequence: 1,
+            revision: 0,
+            epoch: 1,
+        },
         DEVICE,
         Target::Pool {
             pool: PoolId::from_bytes([33; 28]),
@@ -371,10 +403,15 @@ fn forged_wrong_device_scope_revision_and_changed_replay_fail_closed() {
     );
     let stale = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        9,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 9,
+
+            epoch: 1,
+        },
         DEVICE,
         Target::Device,
         12,
@@ -393,10 +430,15 @@ fn forged_wrong_device_scope_revision_and_changed_replay_fail_closed() {
     assert_eq!(f.flash.mutations, writes);
     let valid = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 0,
+
+            epoch: 1,
+        },
         DEVICE,
         Target::Device,
         12,
@@ -405,20 +447,30 @@ fn forged_wrong_device_scope_revision_and_changed_replay_fail_closed() {
     let authority = f.recover();
     let changed = wire(
         &f.root,
-        Action::CredentialReplace,
-        1,
-        0,
-        1,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 1,
+
+            revision: 0,
+
+            epoch: 1,
+        },
         DEVICE,
         Target::Device,
         14,
     );
     let skipped = wire(
         &f.root,
-        Action::CredentialReplace,
-        3,
-        1,
-        2,
+        WireOperation {
+            action: Action::CredentialReplace,
+
+            sequence: 3,
+
+            revision: 1,
+
+            epoch: 2,
+        },
         DEVICE,
         Target::Device,
         15,
@@ -442,10 +494,15 @@ fn flash_failure_or_lying_cleanup_never_returns_an_acknowledgement() {
         let authority = f.recover();
         let request = wire(
             &f.root,
-            Action::CredentialReplace,
-            1,
-            0,
-            1,
+            WireOperation {
+                action: Action::CredentialReplace,
+
+                sequence: 1,
+
+                revision: 0,
+
+                epoch: 1,
+            },
             DEVICE,
             Target::Device,
             12,
@@ -527,10 +584,15 @@ fn pending_enrollment_and_deletion_fail_closed_without_journal_writes() {
         let authority = f.recover();
         let request = wire(
             &f.root,
-            Action::CredentialReplace,
-            1,
-            0,
-            1,
+            WireOperation {
+                action: Action::CredentialReplace,
+
+                sequence: 1,
+
+                revision: 0,
+
+                epoch: 1,
+            },
             DEVICE,
             Target::Device,
             12,

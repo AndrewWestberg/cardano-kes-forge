@@ -244,7 +244,7 @@ impl State {
                 })
             }
             _ => {
-                drop(job);
+                let _ = job;
                 false
             }
         };
@@ -695,12 +695,11 @@ impl PersistentHandler<'_> {
                 .filter(|checkpoint| {
                     checkpoint.outcome == generation::CheckpointOutcome::InProgress
                 })
-            {
-                if !self.generation.as_ref().is_some_and(|job| {
+                && !self.generation.as_ref().is_some_and(|job| {
                     job.scope == scope && job.operation.generation() == checkpoint.generation
-                }) {
-                    return Err(status_error(ErrorScope::Pool, Status::StateDamaged));
-                }
+                })
+            {
+                return Err(status_error(ErrorScope::Pool, Status::StateDamaged));
             }
             let journal = Journal::<PoolCodec>::new(
                 JournalContext {
@@ -740,7 +739,7 @@ impl PersistentHandler<'_> {
                         let job = active.take().expect("checkpoint matched live generation");
                         debug_assert_eq!(job.operation.generation(), generation);
                         let _ = scheduler.cancel_generation(job.lease);
-                        drop(job);
+                        let _ = job;
                     },
                 )
             });
@@ -836,12 +835,11 @@ impl PersistentHandler<'_> {
                         .filter(|checkpoint| {
                             checkpoint.outcome == generation::CheckpointOutcome::InProgress
                         })
-                {
-                    if !self.generation.as_ref().is_some_and(|job| {
+                    && !self.generation.as_ref().is_some_and(|job| {
                         job.scope == scope && job.operation.generation() == checkpoint.generation
-                    }) {
-                        return Err(status_error(ErrorScope::Pool, Status::StateDamaged));
-                    }
+                    })
+                {
+                    return Err(status_error(ErrorScope::Pool, Status::StateDamaged));
                 }
                 (Some(entry.slot()), Some(recovered.state))
             } else {
@@ -884,13 +882,13 @@ impl PersistentHandler<'_> {
                         {
                             let job = active.take().expect("matching generation exists");
                             let _ = scheduler.cancel_generation(job.lease);
-                            drop(job);
+                            let _ = job;
                         }
                     },
                 )
             });
-            drop(flash);
-            drop(pool_state);
+            let _ = flash;
+            let _ = pool_state;
             let outcome = match outcome {
                 Ok(outcome) => outcome,
                 Err(error) => {
@@ -1002,19 +1000,19 @@ impl PersistentHandler<'_> {
                     || {
                         if let Some(job) = active.take() {
                             let _ = scheduler.cancel_generation(job.lease);
-                            drop(job);
+                            let _ = job;
                         }
                     },
                 )
             });
-            drop(flash);
+            let _ = flash;
             let preparation = match result {
                 Ok(preparation) => preparation,
                 Err(failure) => {
                     if failure.teardown_required {
                         if let Some(job) = self.generation.take() {
                             let _ = scheduler.cancel_generation(job.lease);
-                            drop(job);
+                            let _ = job;
                         }
                         self.handler.invalidate_all_pool_sessions();
                         durable.retirement_cleanup_verified = false;

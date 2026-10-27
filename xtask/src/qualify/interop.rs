@@ -396,7 +396,7 @@ fn decode_hex(text: &[u8], output: &mut [u8]) -> Result<()> {
             _ => Err(INVALID.into()),
         }
     }
-    for (pair, destination) in text.chunks_exact(2).zip(output) {
+    for (pair, destination) in text.as_chunks::<2>().0.iter().zip(output) {
         *destination = (digit(pair[0])? << 4) | digit(pair[1])?;
     }
     Ok(())

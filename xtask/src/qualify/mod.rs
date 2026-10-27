@@ -1,7 +1,17 @@
+pub mod backup_producer;
+pub mod campaign;
 pub mod feasibility;
+pub mod generation;
 pub mod interop;
 pub mod load;
 pub mod management;
+pub mod node;
+pub mod operators;
 pub mod power_loss;
+pub mod public_network;
 pub mod recovery_files;
+pub mod replacement;
+pub mod rotation;
+pub mod security;
 pub mod security_modes;
+pub mod telemetry;

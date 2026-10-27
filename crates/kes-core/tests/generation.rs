@@ -280,7 +280,8 @@ fn owned_generation_moves_between_turns_and_preserves_enrolled_lifetime() {
     assert_eq!(key.period().unwrap(), RelativePeriod::new(0).unwrap());
     let verification_key = key.verification_key().unwrap();
     let verified = tree.verify(&verification_key).unwrap();
-    key.evolve_to(RelativePeriod::new(31).unwrap(), &verified).unwrap();
+    key.evolve_to(RelativePeriod::new(31).unwrap(), &verified)
+        .unwrap();
     assert_eq!(
         key.evolve_to(RelativePeriod::new(32).unwrap(), &verified),
         Err(CryptoError::LifetimeExceeded),
@@ -298,5 +299,8 @@ fn cancelled_owned_generation_does_not_retain_a_borrow_or_publish_a_key() {
     seed.fill(0x44);
     let job = Generation::begin(&mut seed, lifetime).unwrap();
     assert_eq!(job.completed_leaves(), 0);
-    assert!(matches!(job.finish(), Err(CryptoError::GenerationIncomplete)));
+    assert!(matches!(
+        job.finish(),
+        Err(CryptoError::GenerationIncomplete)
+    ));
 }

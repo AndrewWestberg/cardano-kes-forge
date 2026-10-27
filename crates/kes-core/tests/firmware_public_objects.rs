@@ -84,7 +84,8 @@ fn real_generation_object_survives_journal_commit_reboot_and_backup_fetch() {
     else {
         panic!("new generation must start")
     };
-    let mut job = generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
+    let mut job =
+        generation::begin_key_generation(&mut f.entropy, KesLifetime::new(64).unwrap()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
@@ -101,7 +102,9 @@ fn real_generation_object_survives_journal_commit_reboot_and_backup_fetch() {
                 key,
                 &verified,
                 device,
-                &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x23; 32])),
+                &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new(
+                    [0x23; 32],
+                )),
                 &mut f.entropy,
                 &mut store,
                 &mut write,

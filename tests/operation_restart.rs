@@ -246,6 +246,37 @@ fn backup_response(request: [u8; 16], artifact: &[u8], digest: [u8; 32]) -> Vec<
     })
 }
 
+fn status_response(request: [u8; 16]) -> Vec<u8> {
+    response(Operation::Status, request, Status::Ok, |encoder| {
+        encoder.map(9).unwrap();
+        encoder.text("active").unwrap();
+        encoder.null().unwrap();
+        encoder.text("health").unwrap();
+        encoder.text("healthy").unwrap();
+        encoder.text("staged").unwrap();
+        encoder.null().unwrap();
+        encoder.text("revoked").unwrap();
+        encoder.boolean(false).unwrap();
+        encoder.text("revision").unwrap();
+        encoder.uint(1).unwrap();
+        encoder.text("directory").unwrap();
+        encoder.array(0).unwrap();
+        encoder.text("security_mode").unwrap();
+        encoder.text("development").unwrap();
+        encoder.text("blocking_reason").unwrap();
+        encoder.text("fixture").unwrap();
+        encoder.text("credential_epoch").unwrap();
+        encoder.uint(0).unwrap();
+    })
+}
+
+fn serve_initial_status(listener: &UnixListener) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let (operation, request) = read_request(&mut stream);
+    assert_eq!(operation, Operation::Status);
+    send_response(stream, &status_response(request));
+}
+
 fn reclaimed_response(request: [u8; 16]) -> Vec<u8> {
     response(
         Operation::OpStatus,
@@ -331,6 +362,7 @@ fn killed_after_dispatch_reconciles_without_replay_and_rejects_changed_payload()
     let (resume_tx, resume_rx) = mpsc::channel();
     let server_artifact = artifact.clone();
     let server = thread::spawn(move || {
+        serve_initial_status(&listener);
         let (mut generate, _) = listener.accept().unwrap();
         assert_eq!(read_request(&mut generate), (Operation::Generate, REQUEST));
         dispatched_tx.send(()).unwrap();
@@ -391,6 +423,7 @@ fn killed_after_device_commit_reconciles_status_and_completes_publication() {
     let (resume_tx, resume_rx) = mpsc::channel();
     let server_artifact = artifact.clone();
     let server = thread::spawn(move || {
+        serve_initial_status(&listener);
         let (mut generate, _) = listener.accept().unwrap();
         assert_eq!(read_request(&mut generate), (Operation::Generate, REQUEST));
         send_response(
@@ -441,6 +474,7 @@ fn authoritative_result_reclaimed_is_terminal_across_client_restarts() {
     let (dispatched_tx, dispatched_rx) = mpsc::channel();
     let (resume_tx, resume_rx) = mpsc::channel();
     let server = thread::spawn(move || {
+        serve_initial_status(&listener);
         let (mut generate, _) = listener.accept().unwrap();
         assert_eq!(read_request(&mut generate), (Operation::Generate, REQUEST));
         dispatched_tx.send(()).unwrap();

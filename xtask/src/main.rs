@@ -52,6 +52,15 @@ fn dispatch(args: &[String]) -> evidence::Result<()> {
             );
             println!("       xtask qualify recovery-files --fixture FILE --evidence DIR");
             println!("       xtask qualify interop --fixture FILE --evidence DIR");
+            println!(
+                "       xtask qualify generation|telemetry|rotation|replacement --evidence DIR"
+            );
+            println!(
+                "       xtask qualify node|backup-producer|security|operators --fixture FILE --evidence DIR"
+            );
+            println!(
+                "       xtask qualify public-network --network preview|preprod --fixture FILE --evidence DIR"
+            );
         }
         Some("toolchain") if args.len() == 1 => toolchain()?,
         Some("oracle") if args.len() == 2 && args[1] == "self-check" => {
@@ -78,102 +87,7 @@ fn dispatch(args: &[String]) -> evidence::Result<()> {
                 xtask::fixture::create(opts["--network"], pools, Path::new(opts["--out-dir"]))?;
             println!("{}", serde_json::json!({"manifest":path}));
         }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "feasibility") => {
-            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
-            qualify_feasibility(Path::new(opts["--fixture"]), Path::new(opts["--evidence"]))?;
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "security-modes") => {
-            let opts = options(&args[2..], &["--hardware", "--evidence"])?;
-            let hardware = match opts["--hardware"] {
-                "yes" => true,
-                "no" => false,
-                _ => return Err("--hardware must be yes or no".to_owned()),
-            };
-            let report = qualify::security_modes::run(Path::new(opts["--evidence"]), hardware)?;
-            println!(
-                "{}",
-                serde_json::to_string(&report)
-                    .map_err(|error| format!("encode security-mode report: {error}"))?
-            );
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "load") => {
-            let opts = options(&args[2..], &["--fixture", "--rounds", "--evidence"])?;
-            let rounds = opts["--rounds"]
-                .parse::<u64>()
-                .map_err(|_| "load rounds must be an unsigned integer")?;
-            qualify_load(
-                Path::new(opts["--fixture"]),
-                rounds,
-                Path::new(opts["--evidence"]),
-            )?;
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "load-software") => {
-            let opts = options(&args[2..], &["--evidence"])?;
-            let result = qualify::load::software::run(Path::new(opts["--evidence"]))?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "version": 1,
-                    "campaign": "foundation-load-software",
-                    "verdict": "software-pass",
-                    "cases": result.cases,
-                    "deadline_misses": result.deadline_misses,
-                    "a4_p1_acceptance": false,
-                    "manifest": result.manifest,
-                })
-            );
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "management-software") => {
-            let opts = options(&args[2..], &["--evidence"])?;
-            qualify_management_software(Path::new(opts["--evidence"]))?;
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "recovery-files") => {
-            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
-            let input = std::fs::read(opts["--fixture"])
-                .map_err(|_| "recovery fixture unavailable".to_owned())?;
-            if input.len() > 16_384 {
-                return Err("recovery fixture exceeds size limit".into());
-            }
-            let inputs: qualify::recovery_files::Inputs = serde_json::from_slice(&input)
-                .map_err(|_| "invalid recovery fixture".to_owned())?;
-            let report = qualify::recovery_files::run(&inputs, Path::new(opts["--evidence"]))?;
-            println!(
-                "{}",
-                serde_json::to_string(&report).map_err(|error| error.to_string())?
-            );
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "interop") => {
-            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
-            let input = std::fs::read(opts["--fixture"])
-                .map_err(|_| "interop fixture unavailable".to_owned())?;
-            if input.len() > 16_384 {
-                return Err("interop fixture exceeds size limit".into());
-            }
-            let inputs: qualify::interop::Inputs =
-                serde_json::from_slice(&input).map_err(|_| "invalid interop fixture".to_owned())?;
-            let report = qualify::interop::run(&inputs)?;
-            let path = Path::new(opts["--evidence"]).join("interop.json");
-            evidence::write_new_json(&path, &report)?;
-            println!(
-                "{}",
-                serde_json::to_string(&report).map_err(|error| error.to_string())?
-            );
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "power-loss-software") => {
-            let opts = options(&args[2..], &["--evidence"])?;
-            qualify_power_loss_software(Path::new(opts["--evidence"]))?;
-        }
-        Some("qualify") if args.get(1).is_some_and(|arg| arg == "power-loss") => {
-            let opts = options(&args[2..], &["--fixture", "--cuts", "--evidence"])?;
-            let cuts = opts["--cuts"]
-                .parse::<u64>()
-                .map_err(|_| "physical cuts must be an unsigned integer")?;
-            qualify_power_loss(
-                Path::new(opts["--fixture"]),
-                cuts,
-                Path::new(opts["--evidence"]),
-            )?;
-        }
+        Some("qualify") => qualify_command(args)?,
         Some("freeze") => {
             let opts = options(
                 &args[1..],
@@ -261,6 +175,169 @@ fn qualification_gate(
         .ok_or("physical gate not approved")?;
     let directory = candidate.join(expected_gate);
     Ok(Some((frozen, gate, directory)))
+}
+
+fn qualify_command(args: &[String]) -> evidence::Result<()> {
+    match args.get(1).map(String::as_str) {
+        Some("feasibility") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            qualify_feasibility(Path::new(opts["--fixture"]), Path::new(opts["--evidence"]))?;
+        }
+        Some("security-modes") => {
+            let opts = options(&args[2..], &["--hardware", "--evidence"])?;
+            let hardware = match opts["--hardware"] {
+                "yes" => true,
+                "no" => false,
+                _ => return Err("--hardware must be yes or no".to_owned()),
+            };
+            let report = qualify::security_modes::run(Path::new(opts["--evidence"]), hardware)?;
+            println!(
+                "{}",
+                serde_json::to_string(&report)
+                    .map_err(|error| format!("encode security-mode report: {error}"))?
+            );
+        }
+        Some("generation") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            print_report(qualify::generation::run(Path::new(opts["--evidence"]))?)?;
+        }
+        Some("node") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            print_report(qualify::node::run(
+                Path::new(opts["--fixture"]),
+                Path::new(opts["--evidence"]),
+            )?)?;
+        }
+        Some("backup-producer") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            print_report(qualify::backup_producer::run(
+                Path::new(opts["--fixture"]),
+                Path::new(opts["--evidence"]),
+            )?)?;
+        }
+        Some("telemetry") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            print_report(qualify::telemetry::run(Path::new(opts["--evidence"]))?)?;
+        }
+        Some("rotation") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            print_report(qualify::rotation::run(Path::new(opts["--evidence"]))?)?;
+        }
+        Some("replacement") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            print_report(qualify::replacement::run(Path::new(opts["--evidence"]))?)?;
+        }
+        Some("security") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            print_report(qualify::security::run(
+                Path::new(opts["--fixture"]),
+                Path::new(opts["--evidence"]),
+            )?)?;
+        }
+        Some("operators") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            print_report(qualify::operators::run(
+                Path::new(opts["--fixture"]),
+                Path::new(opts["--evidence"]),
+            )?)?;
+        }
+        Some("public-network") => {
+            let opts = options(&args[2..], &["--network", "--fixture", "--evidence"])?;
+            print_report(qualify::public_network::run(
+                opts["--network"],
+                Path::new(opts["--fixture"]),
+                Path::new(opts["--evidence"]),
+            )?)?;
+        }
+        Some("load") => {
+            let opts = options(&args[2..], &["--fixture", "--rounds", "--evidence"])?;
+            let rounds = opts["--rounds"]
+                .parse::<u64>()
+                .map_err(|_| "load rounds must be an unsigned integer")?;
+            qualify_load(
+                Path::new(opts["--fixture"]),
+                rounds,
+                Path::new(opts["--evidence"]),
+            )?;
+        }
+        Some("load-software") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            let result = qualify::load::software::run(Path::new(opts["--evidence"]))?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": 1,
+                    "campaign": "foundation-load-software",
+                    "verdict": "software-pass",
+                    "cases": result.cases,
+                    "deadline_misses": result.deadline_misses,
+                    "a4_p1_acceptance": false,
+                    "manifest": result.manifest,
+                })
+            );
+        }
+        Some("management-software") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            qualify_management_software(Path::new(opts["--evidence"]))?;
+        }
+        Some("recovery-files") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            let input = std::fs::read(opts["--fixture"])
+                .map_err(|_| "recovery fixture unavailable".to_owned())?;
+            if input.len() > 16_384 {
+                return Err("recovery fixture exceeds size limit".into());
+            }
+            let inputs: qualify::recovery_files::Inputs = serde_json::from_slice(&input)
+                .map_err(|_| "invalid recovery fixture".to_owned())?;
+            let report = qualify::recovery_files::run(&inputs, Path::new(opts["--evidence"]))?;
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|error| error.to_string())?
+            );
+        }
+        Some("interop") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            let input = std::fs::read(opts["--fixture"])
+                .map_err(|_| "interop fixture unavailable".to_owned())?;
+            if input.len() > 16_384 {
+                return Err("interop fixture exceeds size limit".into());
+            }
+            let inputs: qualify::interop::Inputs =
+                serde_json::from_slice(&input).map_err(|_| "invalid interop fixture".to_owned())?;
+            let report = qualify::interop::run(&inputs)?;
+            let path = Path::new(opts["--evidence"]).join("interop.json");
+            evidence::write_new_json(&path, &report)?;
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|error| error.to_string())?
+            );
+        }
+        Some("power-loss-software") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            qualify_power_loss_software(Path::new(opts["--evidence"]))?;
+        }
+        Some("power-loss") => {
+            let opts = options(&args[2..], &["--fixture", "--cuts", "--evidence"])?;
+            let cuts = opts["--cuts"]
+                .parse::<u64>()
+                .map_err(|_| "physical cuts must be an unsigned integer")?;
+            qualify_power_loss(
+                Path::new(opts["--fixture"]),
+                cuts,
+                Path::new(opts["--evidence"]),
+            )?;
+        }
+        _ => return Err("unsupported qualify command; use xtask --help".to_owned()),
+    }
+    Ok(())
+}
+
+fn print_report<T: serde::Serialize>(report: T) -> evidence::Result<()> {
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|error| error.to_string())?
+    );
+    Ok(())
 }
 
 fn qualify_load(fixture: &Path, rounds: u64, evidence_root: &Path) -> evidence::Result<()> {

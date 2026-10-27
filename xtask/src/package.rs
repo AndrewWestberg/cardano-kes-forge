@@ -57,7 +57,6 @@ impl Profile {
                 "management enrollment-create",
                 "management prepare",
                 "management apply",
-                "firmware update",
             ],
             Self::Recovery => &[
                 "backup recover",
@@ -69,7 +68,6 @@ impl Profile {
                 "authority key-create",
                 "provision inspect",
                 "provision prepare",
-                "provision apply",
             ],
             Self::Development => &[
                 "key-gen-KES",
@@ -479,7 +477,7 @@ mod tests {
         let error = validate_surface(Profile::Development, &actual).unwrap_err();
         assert!(error.contains("dev inspect"));
         let mut actual = surface(Profile::Provisioning);
-        actual.commands.retain(|s| s != "provision apply");
+        actual.commands.retain(|s| s != "provision prepare");
         assert!(validate_surface(Profile::Provisioning, &actual).is_err());
     }
 
