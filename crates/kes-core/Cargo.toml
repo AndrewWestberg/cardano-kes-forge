@@ -48,6 +48,26 @@ required-features = ["protected-runtime"]
 name = "operations"
 required-features = ["protected-runtime"]
 
+[[test]]
+name = "foundation_load"
+required-features = ["native-oracles"]
+[[test]]
+name = "firmware_public_objects"
+required-features = ["protected-runtime"]
+
+[[test]]
+name = "generation_journal"
+required-features = ["protected-runtime"]
+
+[[test]]
+name = "pool_management"
+required-features = ["protected-runtime"]
+
+[[test]]
+name = "firmware_pool_deletion"
+required-features = ["protected-runtime"]
+
+
 [[bench]]
 name = "kes"
 harness = false

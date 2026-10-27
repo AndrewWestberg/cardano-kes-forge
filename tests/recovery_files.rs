@@ -10,7 +10,7 @@ use hpke::{
     kdf::HkdfSha256, kem::X25519HkdfSha256, setup_sender,
 };
 use kes_core::cbor::{Encoder, Value};
-use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
+use kes_core::crypto::Generation;
 use kes_core::types::{
     DeviceId, GenerationId, GenerationNumber, IncarnationId, KesLifetime, PoolId, RelativePeriod,
 };
@@ -221,13 +221,11 @@ fn recoverable_backup() -> (
 
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [0x41; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut generation = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut generation = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         generation.step().unwrap();
     }
-    generation.finish().unwrap();
+    let (key, _tree) = generation.finish().unwrap();
     let verification_key = key.verification_key().unwrap();
     let state = *key.canonical_state().unwrap().bytes();
 
@@ -360,19 +358,126 @@ fn authenticated_backup_recovery_rejects_wrong_inputs_and_decodes_cardano_key() 
     assert_eq!(published["cborHex"].as_str().unwrap().len(), 6 + 608 * 2);
 }
 
+/// The gate seeds the implementation in a disposable workspace, not this
+/// detector: mode selection never changes the expected authentication policy.
+#[test]
+fn artifact_output_sensitivity_uses_authenticated_recovery_and_no_clobber()
+-> Result<(), &'static str> {
+    let mode = std::env::var("KES_GATE_MODE").ok();
+    let report = matches!(
+        mode.as_deref(),
+        Some("clean" | "seeded-artifact-authentication-or-publication")
+    );
+    let (artifact, recipient, expected, state) = recoverable_backup();
+    let directory = Directory::new(0o700);
+    let original = directory.0.join("original.skey");
+    recover::recover_to_file(
+        &artifact,
+        &recipient,
+        b"recovery password",
+        expected,
+        &original,
+    )
+    .map_err(|_| "authentic recovery failed")?;
+    let envelope =
+        recover::cardano_envelope(&state).map_err(|_| "conventional key envelope failed")?;
+    if fs::read(&original).map_err(|_| "published key unavailable")? != envelope[..]
+        || fs::metadata(&original)
+            .map_err(|_| "published metadata unavailable")?
+            .permissions()
+            .mode()
+            & 0o777
+            != 0o600
+    {
+        return Err("authentic publication did not preserve the protected key");
+    }
+    let retry = recover::recover_to_file(
+        &artifact,
+        &recipient,
+        b"recovery password",
+        expected,
+        &original,
+    );
+    if retry != Err(RecoverError::Publication(PublicationError::ExistingOutput))
+        || fs::read(&original).map_err(|_| "original output unavailable")? != envelope[..]
+    {
+        return Err("recovery output was not no-clobber");
+    }
+
+    let signature = Value::parse(&artifact[8..])
+        .map_err(|_| "fixture artifact invalid")?
+        .map()
+        .map_err(|_| "fixture artifact is not a map")?
+        .required("device_signature")
+        .map_err(|_| "fixture signature missing")?
+        .bytes()
+        .map_err(|_| "fixture signature invalid")?;
+    let offset = signature.as_ptr() as usize - artifact.as_ptr() as usize;
+    let mut corrupted = artifact.clone();
+    corrupted[offset] ^= 1;
+    let unauthenticated = directory.0.join("unauthenticated.skey");
+    let result = recover::recover_to_file(
+        &corrupted,
+        &recipient,
+        b"recovery password",
+        expected,
+        &unauthenticated,
+    );
+    let violation = match result {
+        Err(RecoverError::InvalidSignature) if !unauthenticated.exists() => false,
+        Ok(()) => {
+            if fs::read(&unauthenticated).map_err(|_| "unauthenticated output unavailable")?
+                != envelope[..]
+            {
+                return Err("unexpected unauthenticated output; no detection credit");
+            }
+            true
+        }
+        _ => return Err("unexpected recovery result; no authentication detection credit"),
+    };
+    if report {
+        let mut measurements = serde_json::json!({
+            "violations": u64::from(violation),
+            "authentic_recovery": 1,
+            "no_clobber_rejections": 1,
+            "corrupted_signature_publications": u64::from(violation),
+        });
+        if violation {
+            measurements["counterexample"] = serde_json::json!({
+                "mode": "seeded-artifact-authentication-or-publication",
+                "path": "backup.recover::recover_to_file",
+                "observation": "a one-bit-corrupted device signature produced the complete conventional signing-key file",
+                "disclosure": "public",
+            });
+        }
+        println!(
+            "KES_GATE_SUMMARY {}",
+            serde_json::json!({
+                "version": 1,
+                "cases": 3,
+                "scenarios": {"artifact-output": 3},
+                "measurements": measurements,
+            })
+        );
+    }
+    if violation {
+        return Err("unauthenticated plaintext publication detected");
+    }
+    Ok(())
+}
+
 #[test]
 fn core_backup_producer_roundtrips_and_freezes_period_zero_artifact() {
     let (recipient_public, recipient_file) =
         recipient::create(b"producer password", &mut DeterministicEntropy(201)).unwrap();
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [0xd1; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (mut key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let identity = SigningKey::from_bytes(&[0xd2; 32]);
     let metadata = kes_core::backup::Metadata {

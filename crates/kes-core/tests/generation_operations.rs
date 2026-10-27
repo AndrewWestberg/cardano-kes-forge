@@ -1,6 +1,5 @@
-use ed25519_dalek::SigningKey;
+
 use kes_core::cbor::Value;
-use kes_core::crypto::{KesKey, PublicTreeBuffer};
 use kes_core::generation::{
     Admission, CheckpointOutcome, Error, GenerationCoordinator, GenerationRequest, OperationStatus,
     PublicObjectStore, begin_key_generation, get_backup,
@@ -177,13 +176,12 @@ fn generation_is_admitted_once_published_after_readback_and_retrieved_byte_exact
         Admission::Existing(OperationStatus::InProgress { .. })
     ));
 
-    let mut key = KesKey::erased(KesLifetime::new(64).unwrap());
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = begin_key_generation(&mut entropy, &mut key, &mut tree).unwrap();
+    let mut job = begin_key_generation(&mut entropy, KesLifetime::new(64).unwrap()).unwrap();
     for completed in 1..=64 {
         assert_eq!(job.step().unwrap(), completed);
     }
-    let verified = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     <PoolCodec as SnapshotCodec>::set_recovery_revision(&mut pool, Revision::new(7));
     let mut store = MemoryStore::new();
     let mut write_buffer = [0; MAX_PUBLIC_OBJECT_BYTES];
@@ -195,7 +193,7 @@ fn generation_is_admitted_once_published_after_readback_and_retrieved_byte_exact
             key,
             &verified,
             DeviceId::from_bytes([0xa1; 16]),
-            &SigningKey::from_bytes(&[0xa2; 32]),
+            &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0xa2; 32])),
             &mut entropy,
             &mut store,
             &mut write_buffer,
@@ -246,13 +244,12 @@ fn corrupted_public_object_readback_never_publishes_and_records_not_committed() 
         Admission::Started(operation) => operation,
         Admission::Existing(_) => panic!("fresh request must start"),
     };
-    let mut key = KesKey::erased(KesLifetime::new(64).unwrap());
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = begin_key_generation(&mut entropy, &mut key, &mut tree).unwrap();
+    let mut job = begin_key_generation(&mut entropy, KesLifetime::new(64).unwrap()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let mut store = MemoryStore::new();
     store.corrupt_read = true;
     let error = coordinator
@@ -262,7 +259,7 @@ fn corrupted_public_object_readback_never_publishes_and_records_not_committed() 
             key,
             &verified,
             DeviceId::from_bytes([0xc1; 16]),
-            &SigningKey::from_bytes(&[0xc2; 32]),
+            &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0xc2; 32])),
             &mut entropy,
             &mut store,
             &mut [0; MAX_PUBLIC_OBJECT_BYTES],
@@ -292,13 +289,12 @@ fn changed_generation_policy_cancels_before_public_object_write() {
         Admission::Started(operation) => operation,
         Admission::Existing(_) => panic!("fresh request must start"),
     };
-    let mut key = KesKey::erased(KesLifetime::new(64).unwrap());
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = begin_key_generation(&mut entropy, &mut key, &mut tree).unwrap();
+    let mut job = begin_key_generation(&mut entropy, KesLifetime::new(64).unwrap()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let mut changed = with_changed_recipient_epoch(&original);
     let mut store = MemoryStore::new();
     let error = coordinator
@@ -308,7 +304,7 @@ fn changed_generation_policy_cancels_before_public_object_write() {
             key,
             &verified,
             DeviceId::from_bytes([0xce; 16]),
-            &SigningKey::from_bytes(&[0xcf; 32]),
+            &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0xcf; 32])),
             &mut entropy,
             &mut store,
             &mut [0; MAX_PUBLIC_OBJECT_BYTES],
@@ -373,7 +369,7 @@ fn stale_revision_wrong_scope_and_unknown_or_reclaimed_status_are_distinct() {
             operation.request(),
             Some(operation.generation_number())
         ),
-        OperationStatus::NotCommitted { .. }
+        OperationStatus::InProgress { .. }
     ));
     let mut reclaimed =
         GenerationCoordinator::from_checkpoint(kes_core::generation::GenerationCheckpoint {

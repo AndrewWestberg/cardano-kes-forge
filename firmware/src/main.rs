@@ -15,7 +15,6 @@ use kes_firmware::{
     entropy::HealthCheckedEntropy, security::gateway::DeviceKeys, storage::FittedFlash,
     usb::UsbDispatcher,
 };
-use rp_pac as pac;
 
 struct Runtime<'d> {
     _flash: FittedFlash<'d>,
@@ -57,9 +56,8 @@ impl From<GatewayError> for BootError {
 #[entry]
 fn main() -> ! {
     let peripherals = embassy_rp::init(Default::default());
-    let flash_devinfo = u32::from(pac::OTP_DATA.flash_devinfo().read().0);
     let flash = HalFlash::new_blocking(peripherals.FLASH);
-    let fitted = match FittedFlash::new(flash, flash_devinfo) {
+    let fitted = match FittedFlash::new(flash) {
         Ok(fitted) => fitted,
         Err(_) => fail_stop(),
     };

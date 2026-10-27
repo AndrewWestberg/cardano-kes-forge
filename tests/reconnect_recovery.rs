@@ -1,11 +1,10 @@
 use cardano_kes_forge::host::{
     client::{self, Error as ClientError},
-    config::{LockedSigningKey, MachineCredential, NetworkBinding, PoolConnection},
+    config::{NetworkBinding, PublicPoolConnection},
     observation::{NetworkContext, State as ObservationState},
     operations::{Identity, OperationRecord, State},
     signing::{Binding, Router, Session},
 };
-use ed25519_dalek::SigningKey;
 use kes_core::cbor::Encoder;
 use kes_protocol::{Envelope, EnvelopeKind, Operation, Status};
 use std::{
@@ -60,9 +59,8 @@ enum Reply {
     Malformed,
 }
 
-fn connection(socket_path: PathBuf, name: &str) -> PoolConnection {
-    let signing = SigningKey::from_bytes(&[0x77; 32]);
-    PoolConnection {
+fn connection(socket_path: PathBuf, name: &str) -> PublicPoolConnection {
+    PublicPoolConnection {
         socket_path,
         device_id: [1; 16],
         pool_id: [2; 28],
@@ -77,11 +75,6 @@ fn connection(socket_path: PathBuf, name: &str) -> PoolConnection {
         connection_name: name.to_owned(),
         device_identity_file: PathBuf::from("unused-identity.json"),
         credential_file: PathBuf::from("unused-credential.json"),
-        credential: MachineCredential {
-            epoch: 0,
-            public_key: signing.verifying_key().to_bytes(),
-            signing_key: LockedSigningKey::new(signing).unwrap(),
-        },
         security_policy: "isolated-development".to_owned(),
     }
 }
@@ -101,6 +94,7 @@ fn serve(socket: &Path, connection: &'static str, replies: Vec<Reply>) -> thread
                 Reply::Drop => {
                     assert_eq!(request_id, REQUEST);
                     assert_eq!(request.operation, Operation::Generate);
+                    assert_eq!(request.payload().required("expected_revision").unwrap().uint().unwrap(), 5);
                 }
                 Reply::Malformed => {
                     assert_eq!(request.operation, Operation::OpStatus);
@@ -215,7 +209,7 @@ fn lost_generate_ack_reconciles_authoritative_status_without_replaying_mutation(
         ],
     );
     let result =
-        client::generate(&connection(socket, CONNECTION), REQUEST, GENERATION_NUMBER).unwrap();
+        client::generate(&connection(socket, CONNECTION), REQUEST, GENERATION_NUMBER, 5).unwrap();
     assert_eq!(result.generation, GENERATION);
     assert_eq!(result.creation_request, REQUEST);
     assert_eq!(result.generation_number, GENERATION_NUMBER);

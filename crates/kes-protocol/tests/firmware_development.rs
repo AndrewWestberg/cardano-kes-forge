@@ -9,9 +9,14 @@ mod security {
         pub use crate::gateway_impl::*;
     }
 }
-#[allow(dead_code)]
+#[allow(dead_code, unused_imports, unexpected_cfgs)]
 #[path = "../../../firmware/src/development.rs"]
 mod development;
+#[path = "firmware_development/operation_status.rs"]
+mod operation_status;
+#[allow(dead_code)]
+#[path = "../../../firmware/src/pool_service.rs"]
+mod pool_service;
 #[allow(dead_code)]
 #[path = "../../../firmware/src/usb.rs"]
 mod usb;
@@ -120,7 +125,7 @@ fn status_request(session: &[u8; 16], request: RequestId, sequence: u64, mac: [u
 
 fn dispatch(
     dispatcher: &mut UsbDispatcher,
-    handler: &mut DevelopmentHandler,
+    handler: &mut impl usb::SecureRequestHandler,
     request: &[u8],
     now_ms: u64,
 ) -> Result<Vec<u8>, usb::UsbError> {
@@ -263,4 +268,94 @@ fn concrete_handler_authenticates_info_open_and_status_then_rejects_replay() {
 
     let replay = dispatch(&mut dispatcher, &mut handler, &authenticated, 400).unwrap_err();
     assert_eq!(replay.status, kes_protocol::Status::Replay);
+
+    let next_context = OpenContext::new(
+        DEVICE,
+        BOOT_NONCE,
+        Scope::Management,
+        CredentialEpoch::new(0),
+        1,
+        RequestId::from_bytes([14; 16]),
+    );
+    let (next_open, pending) =
+        begin_open(next_context, &hpke_public_key, &machine, &mut host_rng).unwrap();
+    let response = dispatch(
+        &mut dispatcher,
+        &mut handler,
+        &open_request(&next_open),
+        500,
+    )
+    .unwrap();
+    let mut next_host = pending
+        .complete(
+            Envelope::parse(&response, EnvelopeKind::OpenResponse)
+                .unwrap()
+                .map(),
+        )
+        .unwrap();
+    let request_id = RequestId::from_bytes([15; 16]);
+    let unsigned = status_request(next_host.session_id(), request_id, 0, [0; 32]);
+    let mac = next_host.request_mac(map(&unsigned)).unwrap();
+    let old_session_request = status_request(next_host.session_id(), request_id, 0, mac);
+    handler.disconnect();
+    let disconnected =
+        dispatch(&mut dispatcher, &mut handler, &old_session_request, 600).unwrap_err();
+    assert_eq!(disconnected.status, kes_protocol::Status::AuthFailed);
+
+    // The counter remains monotonic across disconnect, so an old OPEN cannot
+    // re-establish the invalidated session.
+    assert!(
+        dispatch(
+            &mut dispatcher,
+            &mut handler,
+            &open_request(&next_open),
+            700
+        )
+        .is_err()
+    );
+    let final_context = OpenContext::new(
+        DEVICE,
+        BOOT_NONCE,
+        Scope::Management,
+        CredentialEpoch::new(0),
+        2,
+        RequestId::from_bytes([16; 16]),
+    );
+    let (final_open, pending) =
+        begin_open(final_context, &hpke_public_key, &machine, &mut host_rng).unwrap();
+    let response = dispatch(
+        &mut dispatcher,
+        &mut handler,
+        &open_request(&final_open),
+        800,
+    )
+    .unwrap();
+    let mut final_host = pending
+        .complete(
+            Envelope::parse(&response, EnvelopeKind::OpenResponse)
+                .unwrap()
+                .map(),
+        )
+        .unwrap();
+    let request_id = RequestId::from_bytes([17; 16]);
+    let unsigned = status_request(final_host.session_id(), request_id, 0, [0; 32]);
+    let mac = final_host.request_mac(map(&unsigned)).unwrap();
+    let request = status_request(final_host.session_id(), request_id, 0, mac);
+    let response = dispatch(&mut dispatcher, &mut handler, &request, 900).unwrap();
+    final_host
+        .authenticate_response(
+            Envelope::parse(&response, EnvelopeKind::DeviceResponse)
+                .unwrap()
+                .map(),
+            request_id,
+            "STATUS",
+            0,
+        )
+        .unwrap();
 }
+
+#[path = "firmware_development/enrollment.rs"]
+mod enrollment;
+
+#[path = "firmware_development/status.rs"]
+mod status;

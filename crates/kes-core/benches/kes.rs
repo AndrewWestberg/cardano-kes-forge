@@ -114,14 +114,11 @@ fn relative(period: u64) -> RelativePeriod {
 
 fn generated(seed_byte: u8) -> (KesKey, PublicTreeBuffer) {
     let mut seed = [seed_byte; 32];
-    let mut key = KesKey::erased(KesLifetime::new(PERIODS).unwrap());
-    let mut tree = PublicTreeBuffer::new();
-    let mut generation = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut generation = Generation::begin(&mut seed, KesLifetime::new(PERIODS).unwrap()).unwrap();
     for _ in 0..PERIODS {
         black_box(generation.step().unwrap());
     }
-    black_box(generation.finish().unwrap().root());
-    (key, tree)
+    black_box(generation.finish().unwrap())
 }
 
 fn evolution_inputs() -> (
@@ -144,19 +141,14 @@ fn evolution_inputs() -> (
 fn benchmark_generation(criterion: &mut Criterion) {
     criterion.bench_function("generation/sum6_64_leaves", |bench| {
         bench.iter_batched(
-            || {
-                (
-                    [0x31; 32],
-                    KesKey::erased(KesLifetime::new(PERIODS).unwrap()),
-                    PublicTreeBuffer::new(),
-                )
-            },
-            |(mut seed, mut key, mut tree)| {
-                let mut generation = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+            || [0x31; 32],
+            |mut seed| {
+                let mut generation = Generation::begin(&mut seed, KesLifetime::new(PERIODS).unwrap()).unwrap();
                 for _ in 0..PERIODS {
                     black_box(generation.step().unwrap());
                 }
-                black_box(generation.finish().unwrap().root());
+                let (key, tree) = black_box(generation.finish().unwrap());
+                black_box(tree.as_bytes());
                 black_box(key.verification_key().unwrap());
             },
             BatchSize::LargeInput,

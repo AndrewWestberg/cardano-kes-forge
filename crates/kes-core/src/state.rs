@@ -9,7 +9,8 @@ mod pool;
 pub use device::{
     DEVICE_HOT_STATE_LIMIT, DIRECTORY_IDENTITY_CAPACITY, DIRECTORY_WORKSPACE_LIMIT, DeletionIntent,
     Device, DeviceConfig, DeviceCredential, DeviceRetirement, DeviceSecrets, DirectoryEntry,
-    DirectorySnapshot, PoolTombstone, ReleaseReadinessBinding, VerifiedReleaseReadiness,
+    DirectorySnapshot, EnrollmentIntent, PoolTombstone, ReleaseReadinessBinding,
+    VerifiedReleaseReadiness,
 };
 pub use object::{
     MAX_ENCRYPTED_BACKUP_BYTES, MAX_PUBLIC_OBJECT_BYTES, PUBLIC_OBJECT_HEADER_BYTES,

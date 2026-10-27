@@ -9,6 +9,7 @@ pub mod credentials;
 pub mod crypto;
 pub mod deletion;
 pub mod directory;
+pub mod enrollment;
 pub mod generation;
 pub mod journal;
 pub mod management;

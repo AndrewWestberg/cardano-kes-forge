@@ -4,6 +4,7 @@ use super::tooling;
 use crate::evidence::{Frozen, Result};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 
 pub(crate) const CROSS_POOL_AUTHORIZATION: &str = "seeded-cross-pool-authorization";
 pub(crate) const STALE_PERIOD: &str = "seeded-stale-period";
@@ -101,6 +102,83 @@ pub(crate) fn calibration(
         probes.insert(*mode, detected(mode, &seeded, &output)?);
     }
     Ok(json!({"clean":clean,"clean_cases":clean["cases"],"probes":probes}))
+}
+
+/// Exercise the actual recovery/publication implementation with one omitted
+/// device-signature result check, exclusively in a hash-checked disposable source copy.
+/// The source match locates the mutation; only executable behavior earns credit.
+pub(crate) fn artifact_output_calibration(
+    frozen: &Frozen,
+    runtime: &Runtime,
+    build_id: &str,
+) -> Result<Value> {
+    let config = behavior::build(frozen, build_id)?;
+    if config.package != "cardano-kes-forge"
+        || config
+            .target
+            .as_deref()
+            .is_some_and(|t| t.starts_with("thumb"))
+    {
+        return Err(
+            "artifact/output calibration requires an approved native cardano-kes-forge build"
+                .into(),
+        );
+    }
+    let target: Producer = serde_json::from_value(json!({
+        "build": build_id,
+        "target": "recovery_files",
+    }))
+    .map_err(|_| "cannot configure recovery behavioral producer")?;
+    let (clean, clean_output) = behavior::producer(frozen, runtime, &target, "clean")?;
+    behavior::succeeded(&clean_output)?;
+    if behavior::uint(&clean.measurements, "violations")? != 0 {
+        return Err("clean artifact/output recovery has violations".into());
+    }
+
+    let root = runtime.path.join("artifact-output-source");
+    behavior::copy_candidate(frozen, &root)?;
+    let source_path = root.join("src/backup/recover.rs");
+    let source = fs::read_to_string(&source_path)
+        .map_err(|_| "unavailable: artifact authentication implementation missing")?;
+    let check = "    verify_signature(map, expected.identity_public_key)?;";
+    if source.matches(check).count() != 1 {
+        return Err(
+            "unavailable: artifact signature omission no longer has a unique insertion point"
+                .into(),
+        );
+    }
+    let mutated = source.replacen(
+        check,
+        "    let _ = verify_signature(map, expected.identity_public_key);",
+        1,
+    );
+    fs::write(&source_path, &mutated)
+        .map_err(|_| "cannot seed disposable artifact authentication omission")?;
+    // This clone changes only the execution root, never the stored frozen
+    // identity or original workspace. The changed source is explicitly reported.
+    let mut seeded = frozen.clone();
+    seeded.workspace = root;
+    let (summary, output) = behavior::producer(
+        &seeded,
+        runtime,
+        &target,
+        ARTIFACT_AUTHENTICATION_OR_PUBLICATION,
+    )?;
+    let detection = detected(ARTIFACT_AUTHENTICATION_OR_PUBLICATION, &summary, &output)?;
+    Ok(json!({
+        "clean": {
+            "cases": clean.cases,
+            "exit": clean_output.code,
+            "output_sha256": behavior::digest(&clean_output.stdout),
+        },
+        "probe": detection,
+        "seed": {
+            "source": "src/backup/recover.rs",
+            "defect": "ignored-device-signature-verification-result",
+            "original_sha256": behavior::digest(source.as_bytes()),
+            "mutated_sha256": behavior::digest(mutated.as_bytes()),
+        },
+    }))
 }
 
 #[cfg(test)]

@@ -18,11 +18,22 @@ pub enum Error {
 
 pub fn change_password_interactive(path: &Path) -> Result<(), Error> {
     let protected = load(path)?;
-    let old = recipient::prompt_existing_passphrase().map_err(|_| Error::Terminal)?;
-    protected.unlock(&old).map_err(|_| Error::WrongPassword)?;
-    let new = recipient::prompt_new_passphrase().map_err(|_| Error::Terminal)?;
+    let old = recipient::prompt_existing_passphrase().map_err(prompt_error)?;
+    protected.unlock(&old).map_err(|error| match error {
+        recipient::Error::Authentication => Error::WrongPassword,
+        recipient::Error::MemoryProtection => Error::MemoryProtection,
+        _ => Error::InvalidInput,
+    })?;
+    let new = recipient::prompt_new_passphrase().map_err(prompt_error)?;
     let mut entropy = OsEntropy::new().map_err(|_| Error::Entropy)?;
     change_password_loaded(path, protected, &old, &new, &mut entropy, &NoFault)
+}
+
+fn prompt_error(error: recipient::Error) -> Error {
+    match error {
+        recipient::Error::MemoryProtection => Error::MemoryProtection,
+        _ => Error::Terminal,
+    }
 }
 
 pub fn change_password_with<E: Entropy, F: PublicationFault>(

@@ -8,6 +8,8 @@ use nusb::{DeviceInfo, Endpoint, Interface, MaybeFuture};
 use std::fmt;
 use std::mem;
 use std::time::{Duration, Instant};
+#[cfg(feature = "development")]
+use zeroize::Zeroize;
 
 /// Vendor-specific interface identity. This prevents KES frames from being sent
 /// to unrelated vendor interfaces, including the RP2350 BOOTSEL interface.
@@ -162,6 +164,21 @@ impl fmt::Display for OpenError {
 
 impl std::error::Error for OpenError {}
 
+/// Resolve one explicitly selected USB device without opening or claiming it.
+#[cfg(feature = "provisioning")]
+pub fn resolve_provisioning_selector(selector: &str) -> Result<(u8, u8), OpenError> {
+    let selector = Selector::parse(selector)?;
+    let mut matches = nusb::list_devices()
+        .wait()
+        .map_err(OpenError::Enumerate)?
+        .filter(|device| selector.matches(device));
+    let selected = matches.next().ok_or(OpenError::NotFound)?;
+    if matches.next().is_some() {
+        return Err(OpenError::Ambiguous);
+    }
+    Ok((selected.busnum(), selected.device_address()))
+}
+
 pub struct UsbWire {
     _interface: Interface,
     out: Endpoint<Bulk, Out>,
@@ -288,12 +305,15 @@ impl DeviceWire for UsbWire {
             let status = completion.status;
             self.receive = completion.buffer;
             if status.is_err() || transferred == 0 {
+                #[cfg(feature = "development")]
+                self.receive[..].zeroize();
                 return Err(ClientError::Uncertain);
             }
             let now_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-            let consumed = receiver
-                .push(response, &self.receive[..transferred], now_ms)
-                .map_err(|_| ClientError::Integrity)?;
+            let consumed = receiver.push(response, &self.receive[..transferred], now_ms);
+            #[cfg(feature = "development")]
+            self.receive[..].zeroize();
+            let consumed = consumed.map_err(|_| ClientError::Integrity)?;
             if consumed != transferred {
                 return Err(ClientError::Integrity);
             }

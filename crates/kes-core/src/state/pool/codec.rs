@@ -15,7 +15,7 @@ impl SnapshotCodec for PoolCodec {
     ) -> Result<usize, JournalError> {
         validate(state, context)?;
         let mut e = Encoder::new(out);
-        e.array(13)?;
+        e.array(14)?;
         e.uint(1)?;
         e.bytes(state.pool_id.as_bytes())?;
         e.bytes(state.incarnation.as_bytes())?;
@@ -39,18 +39,19 @@ impl SnapshotCodec for PoolCodec {
         encode_counter(&mut e, state.certificate_high_water)?;
         encode_generation(&mut e, state.current.as_ref())?;
         encode_generation(&mut e, state.staged.as_ref())?;
+        encode_checkpoint(&mut e, state.generation_checkpoint)?;
         let length = e.finish()?.encoded().len();
-        if length > 3440 {
+        if length > Self::MAX_PLAINTEXT_BYTES {
             return Err(JournalError::SizeLimit);
         }
         Ok(length)
     }
 
     fn decode(input: &[u8], context: JournalContext) -> Result<Self::State, JournalError> {
-        if input.len() > 3440 {
+        if input.len() > Self::MAX_PLAINTEXT_BYTES {
             return Err(JournalError::SizeLimit);
         }
-        let mut p = array(Value::parse(input)?, 13)?;
+        let mut p = array(Value::parse(input)?, 14)?;
         expect(&mut p, 1)?;
         let pool_id = PoolId::from_bytes(fixed(&mut p)?);
         let incarnation = IncarnationId::from_bytes(fixed(&mut p)?);
@@ -76,6 +77,7 @@ impl SnapshotCodec for PoolCodec {
         let certificate_high_water = decode_counter(next(&mut p)?)?;
         let current = decode_generation(next(&mut p)?)?;
         let staged = decode_generation(next(&mut p)?)?;
+        let generation_checkpoint = decode_checkpoint(next(&mut p)?)?;
         let state = PoolRegistration {
             pool_id,
             incarnation,
@@ -93,6 +95,7 @@ impl SnapshotCodec for PoolCodec {
             certificate_high_water,
             current,
             staged,
+            generation_checkpoint,
         };
         validate(&state, context)?;
         Ok(state)
@@ -140,6 +143,7 @@ fn validate(state: &PoolRegistration, context: JournalContext) -> Result<(), Jou
     if replay_revision(&state.management_replay) > state.revision {
         return Err(StateError::RevisionConflict.into());
     }
+    validate_checkpoint(state)?;
     if let Some(current) = &state.current {
         validate_generation(state, current, false)?;
         if current
@@ -410,4 +414,128 @@ fn decode_activation_intent(value: Value<'_>) -> Result<Option<ActivationIntent>
         expected_active_generation: GenerationId::from_bytes(fixed(&mut p)?),
         committed_revision: Revision::new(uint(&mut p)?),
     }))
+}
+
+fn encode_checkpoint(
+    e: &mut Encoder<'_>,
+    checkpoint: Option<crate::generation::GenerationCheckpoint>,
+) -> Result<(), JournalError> {
+    use crate::generation::CheckpointOutcome;
+    let Some(c) = checkpoint else {
+        e.null()?;
+        return Ok(());
+    };
+    e.array(12)?;
+    e.bytes(c.request.as_bytes())?;
+    e.bytes(&c.payload_digest)?;
+    e.bytes(c.generation.as_bytes())?;
+    e.uint(c.generation_number.get())?;
+    e.uint(match c.outcome {
+        CheckpointOutcome::InProgress => 0,
+        CheckpointOutcome::NotCommitted => 1,
+        CheckpointOutcome::Committed => 2,
+    })?;
+    e.uint(c.expected_revision.get())?;
+    e.bytes(c.policy.pool.as_bytes())?;
+    e.bytes(c.policy.incarnation.as_bytes())?;
+    e.bytes(&c.policy.recipient_id)?;
+    e.uint(c.policy.recipient_policy_epoch)?;
+    e.uint(c.policy.credential_epoch.get())?;
+    e.uint(c.attempt)?;
+    Ok(())
+}
+
+fn decode_checkpoint(
+    value: Value<'_>,
+) -> Result<Option<crate::generation::GenerationCheckpoint>, JournalError> {
+    use crate::generation::{CheckpointOutcome, GenerationCheckpoint};
+    if value.is_null() {
+        return Ok(None);
+    }
+    let mut c = array(value, 12)?;
+    let request = RequestId::from_bytes(fixed(&mut c)?);
+    let payload_digest = fixed(&mut c)?;
+    let generation = GenerationId::from_bytes(fixed(&mut c)?);
+    let generation_number = GenerationNumber::new(uint(&mut c)?);
+    let outcome = match uint(&mut c)? {
+        0 => CheckpointOutcome::InProgress,
+        1 => CheckpointOutcome::NotCommitted,
+        2 => CheckpointOutcome::Committed,
+        _ => return Err(StateError::GenerationConflict.into()),
+    };
+    let expected_revision = Revision::new(uint(&mut c)?);
+    let policy = GenerationPolicy {
+        pool: PoolId::from_bytes(fixed(&mut c)?),
+        incarnation: IncarnationId::from_bytes(fixed(&mut c)?),
+        recipient_id: fixed(&mut c)?,
+        recipient_policy_epoch: uint(&mut c)?,
+        credential_epoch: CredentialEpoch::new(uint(&mut c)?),
+    };
+    let attempt = uint(&mut c)?;
+    Ok(Some(GenerationCheckpoint {
+        request,
+        payload_digest,
+        generation,
+        generation_number,
+        outcome,
+        expected_revision,
+        policy,
+        attempt,
+    }))
+}
+
+fn validate_checkpoint(state: &PoolRegistration) -> Result<(), JournalError> {
+    use crate::generation::CheckpointOutcome;
+    let Some(c) = state.generation_checkpoint else {
+        return Ok(());
+    };
+    if c.policy.pool != state.pool_id
+        || c.policy.incarnation != state.incarnation
+        || c.policy.credential_epoch > state.credential_epoch
+        || c.policy.recipient_policy_epoch > state.recipient_policy_epoch
+        || (c.policy.recipient_policy_epoch == state.recipient_policy_epoch
+            && c.policy.recipient_id != state.recipient_id)
+        || c.expected_revision >= state.revision
+        || c.generation_number.get() == 0
+    {
+        return Err(StateError::GenerationConflict.into());
+    }
+    let retained = [state.current.as_ref(), state.staged.as_ref()]
+        .into_iter()
+        .flatten()
+        .find(|g| {
+            g.id == c.generation
+                || g.number == c.generation_number
+                || g.creation_request == c.request
+        });
+    match c.outcome {
+        CheckpointOutcome::Committed => {
+            if c.generation_number > state.generation_high_water
+                || retained.is_some_and(|g| {
+                    g.id != c.generation
+                        || g.number != c.generation_number
+                        || g.creation_request != c.request
+                        || g.creation_payload_digest != c.payload_digest
+                })
+            {
+                return Err(StateError::GenerationConflict.into());
+            }
+        }
+        CheckpointOutcome::InProgress | CheckpointOutcome::NotCommitted => {
+            let next_number = state
+                .generation_high_water
+                .checked_increment()
+                .map_err(|_| StateError::CounterOverflow)?;
+            if c.generation_number != next_number
+                || retained.is_some()
+                || (c.outcome == CheckpointOutcome::InProgress
+                    && (c.policy != state.generation_policy()
+                        || state.credential_revoked
+                        || state.staged.is_some()))
+            {
+                return Err(StateError::GenerationConflict.into());
+            }
+        }
+    }
+    Ok(())
 }

@@ -102,7 +102,7 @@ fn development_bootstrap_self_pins_only_the_labeled_disposable_image() {
             hardware_policy_digest: POLICY_DIGEST,
             security_version: 0,
             capability_evidence: b"rp2350-a2;development;otp=untouched;\
-                persistence=none;firmware-digest=unmeasured;\
+                persistence=identity-only;firmware-digest=unmeasured;\
                 entropy=health-checked-a2-exploratory;session-entropy=fresh-per-open",
         },
     );

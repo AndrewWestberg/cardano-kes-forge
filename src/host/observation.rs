@@ -35,6 +35,8 @@ pub struct HistoricalDescriptor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConfirmedObservation {
     pub context: ObservationContext,
+    /// Immutable authenticated per-incarnation generation sequence number.
+    pub generation_number: u64,
     pub relative_period: u64,
     pub service_ready: bool,
     pub observed_at: String,
@@ -84,13 +86,25 @@ pub struct Cache {
     confirmed: Option<ConfirmedObservation>,
     node_period: Option<NodePeriodObservation>,
     historical: Option<HistoricalDescriptor>,
+    historical_context: Option<ObservationContext>,
+    generation_high_water: Option<u64>,
     connected: bool,
     mutation_unresolved: bool,
+    status_usable: Option<bool>,
+    certificate_start: Option<u64>,
 }
 
 impl Cache {
     pub fn connect(&mut self) {
         self.connected = true;
+    }
+
+    pub fn set_certificate_start(&mut self, start: u64) {
+        self.certificate_start = Some(start);
+    }
+
+    pub fn restrict_readiness(&mut self, usable: bool) {
+        self.status_usable = Some(usable);
     }
 
     pub fn disconnect(&mut self) {
@@ -106,12 +120,28 @@ impl Cache {
     }
 
     pub fn record_confirmed(&mut self, observation: ConfirmedObservation) -> bool {
+        if self.historical_context.as_ref().is_some_and(|context| {
+            !same_pool_context(context, &observation.context)
+                || self.generation_high_water.is_some_and(|number| {
+                    observation.generation_number < number
+                        || (observation.generation_number == number
+                            && observation.context.generation != context.generation)
+                        || (observation.context.generation == context.generation
+                            && observation.generation_number != number)
+                })
+        }) {
+            return false;
+        }
         if let Some(historical) = self.historical.as_ref()
             && (observation.context.revision < historical.revision
                 || (observation.context.revision == historical.revision
                     && (observation.context.generation != historical.generation
                         || observation.context.certificate_digest
-                            != historical.certificate_digest)))
+                            != historical.certificate_digest
+                        || observation.relative_period != historical.relative_period))
+                || (observation.context.generation == historical.generation
+                    && (observation.context.certificate_digest != historical.certificate_digest
+                        || observation.relative_period < historical.relative_period)))
         {
             return false;
         }
@@ -123,6 +153,8 @@ impl Cache {
                 self.invalidate_current();
             }
         }
+        self.generation_high_water = Some(observation.generation_number);
+        self.historical_context = Some(observation.context.clone());
         self.historical = Some(HistoricalDescriptor {
             generation: observation.context.generation,
             certificate_digest: observation.context.certificate_digest,
@@ -174,15 +206,29 @@ impl Cache {
             State::Fresh
         };
         let (context, ready, remaining_validity_periods) = if state == State::Fresh {
-            let (confirmed, _) = matched.expect("fresh observations are matched");
+            let (confirmed, node) = matched.expect("fresh observations are matched");
+            let remaining = self.certificate_start.map_or_else(
+                || {
+                    confirmed
+                        .context
+                        .network
+                        .max_kes_evolutions
+                        .saturating_sub(confirmed.relative_period)
+                },
+                |start| {
+                    start
+                        .saturating_add(confirmed.context.network.max_kes_evolutions)
+                        .saturating_sub(node.absolute_period)
+                },
+            );
+            let in_lifetime = self
+                .certificate_start
+                .is_none_or(|start| node.absolute_period >= start)
+                && remaining > 0;
             (
                 Some(&confirmed.context),
-                Some(confirmed.service_ready),
-                confirmed
-                    .context
-                    .network
-                    .max_kes_evolutions
-                    .checked_sub(confirmed.relative_period),
+                Some(confirmed.service_ready && self.status_usable.unwrap_or(true) && in_lifetime),
+                Some(remaining),
             )
         } else {
             (None, None, None)
@@ -209,6 +255,7 @@ impl Cache {
     fn invalidate_current(&mut self) {
         self.confirmed = None;
         self.node_period = None;
+        self.status_usable = None;
     }
 }
 

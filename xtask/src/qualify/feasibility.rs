@@ -8,7 +8,7 @@ use crate::fixture::{Content, ScenarioManifest, Workstation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Read};
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -16,22 +16,6 @@ use std::process::{Command, Stdio};
 pub const STOCK_CLOCK_HZ: u64 = 150_000_000;
 pub const FITTED_FLASH_BYTES: u64 = 4_194_304;
 pub const MAX_RECORD_BYTES: usize = 16 * 1024;
-pub const FOUNDATION_BOUNDARIES: [&str; 14] = [
-    "candidate-object-write",
-    "candidate-bank-erase",
-    "candidate-bank-write",
-    "candidate-bank-verify",
-    "commit-page-erase",
-    "commit-page-write",
-    "commit-page-verify",
-    "predecessor-bank-erase",
-    "predecessor-bank-verify",
-    "ram-secret-wipe",
-    "clean-page-erase",
-    "clean-page-write",
-    "clean-page-verify",
-    "acknowledgement",
-];
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -221,11 +205,13 @@ impl PreparedCampaign {
 pub fn read_records(path: &Path, mut visit: impl FnMut(u64, &[u8]) -> Result<()>) -> Result<u64> {
     let input = File::open(path).map_err(|error| error.to_string())?;
     let mut reader = BufReader::new(input);
-    let mut line = Vec::new();
+    let mut line = Vec::with_capacity(MAX_RECORD_BYTES + 1);
     let mut records = 0u64;
     loop {
         line.clear();
         let read = reader
+            .by_ref()
+            .take(MAX_RECORD_BYTES as u64 + 1)
             .read_until(b'\n', &mut line)
             .map_err(|error| error.to_string())?;
         if read == 0 {
@@ -475,6 +461,41 @@ pub(crate) mod tests {
             kes_ram_bytes: 262_144,
             complete_firmware_free_sram_bytes: 32_768,
             background_generation_peak_observed: true,
+        }
+    }
+
+    #[test]
+    fn record_limit_includes_newline_and_invalid_records_are_not_delivered() {
+        let (_prepared, directory) = prepared();
+        let path = directory.0.join("records.ndjson");
+        let mut bytes = vec![b'x'; MAX_RECORD_BYTES - 1];
+        bytes.extend_from_slice(b"\n{}\n{}\n");
+        fs::write(&path, &bytes).unwrap();
+        let mut lengths = Vec::new();
+        assert_eq!(
+            read_records(&path, |_, line| {
+                lengths.push(line.len());
+                Ok(())
+            }),
+            Ok(3)
+        );
+        assert_eq!(lengths, [MAX_RECORD_BYTES - 1, 2, 2]);
+
+        for invalid in [
+            vec![b'x'; MAX_RECORD_BYTES + 1],
+            vec![b'x'; MAX_RECORD_BYTES],
+            b"\n".to_vec(),
+        ] {
+            fs::write(&path, invalid).unwrap();
+            let mut delivered = false;
+            assert!(
+                read_records(&path, |_, _| {
+                    delivered = true;
+                    Ok(())
+                })
+                .is_err()
+            );
+            assert!(!delivered);
         }
     }
 

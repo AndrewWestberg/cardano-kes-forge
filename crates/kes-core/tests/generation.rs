@@ -1,5 +1,5 @@
 use kes_core::cbor::Value;
-use kes_core::crypto::{CryptoError, Generation, KesKey, PublicTreeBuffer};
+use kes_core::crypto::{CryptoError, Generation};
 use kes_core::journal::{JournalContext, JournalScope, PoolCodec, SnapshotCodec};
 use kes_core::state::{
     Actor, Enrollment, GenerationSpec, KESGeneration, PoolRegistration, PublicObject, StateError,
@@ -69,13 +69,12 @@ fn candidate(
 ) -> KESGeneration {
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [number as u8 + 1; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let object = PublicObject::from_parts(
         generation_id,
@@ -149,9 +148,7 @@ fn entropy_failure_and_incomplete_generation_publish_nothing() {
     let pool = pool();
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [0x81; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..63 {
         job.step().unwrap();
     }
@@ -196,13 +193,12 @@ fn request_and_generation_identity_are_stable_and_staged_capacity_is_one() {
 fn public_artifact_is_immutable_after_secret_evolution_and_parse_recovery() {
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [0xa1; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (mut key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let generation = GenerationId::from_bytes([0xa2; 16]);
     let object =
@@ -262,4 +258,45 @@ fn completion_merges_with_latest_revision_when_captured_policy_is_unchanged() {
         pool.staged().unwrap().id(),
         GenerationId::from_bytes([0xc1; 16])
     );
+}
+
+#[test]
+fn owned_generation_moves_between_turns_and_preserves_enrolled_lifetime() {
+    assert!(core::mem::size_of::<Generation>() <= 5120);
+    let mut seed = [0x42; 32];
+    let lifetime = KesLifetime::new(32).unwrap();
+    let mut scheduled = Some(Generation::begin(&mut seed, lifetime).unwrap());
+    assert_eq!(seed, [0; 32]);
+    for completed in 1..=64 {
+        let mut job = scheduled.take().unwrap();
+        assert_eq!(job.completed_leaves(), completed - 1);
+        assert_eq!(job.step().unwrap(), completed);
+        scheduled = Some(job);
+    }
+    let mut job = scheduled.take().unwrap();
+    assert_eq!(job.step(), Err(CryptoError::GenerationComplete));
+    let (mut key, tree) = job.finish().unwrap();
+    assert_eq!(key.lifetime(), lifetime);
+    assert_eq!(key.period().unwrap(), RelativePeriod::new(0).unwrap());
+    let verification_key = key.verification_key().unwrap();
+    let verified = tree.verify(&verification_key).unwrap();
+    key.evolve_to(RelativePeriod::new(31).unwrap(), &verified).unwrap();
+    assert_eq!(
+        key.evolve_to(RelativePeriod::new(32).unwrap(), &verified),
+        Err(CryptoError::LifetimeExceeded),
+    );
+}
+
+#[test]
+fn cancelled_owned_generation_does_not_retain_a_borrow_or_publish_a_key() {
+    let lifetime = KesLifetime::new(64).unwrap();
+    let mut seed = [0x43; 32];
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
+    job.step().unwrap();
+    drop(job); // Owned zeroizing signing state and seed stack are dropped together.
+    assert_eq!(seed, [0; 32]);
+    seed.fill(0x44);
+    let job = Generation::begin(&mut seed, lifetime).unwrap();
+    assert_eq!(job.completed_leaves(), 0);
+    assert!(matches!(job.finish(), Err(CryptoError::GenerationIncomplete)));
 }

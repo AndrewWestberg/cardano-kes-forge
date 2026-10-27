@@ -19,6 +19,7 @@ enum Kind {
     B(usize),
     Bytes(usize),
     Text(usize),
+    Utc,
     Bool,
     NullB(usize),
     NullableU,
@@ -35,6 +36,7 @@ enum Kind {
     Security,
     Payload,
     Connection,
+    Target,
     ScopeText,
     Certificate,
     Backup,
@@ -185,6 +187,26 @@ fn validate(v: Value<'_>, kind: Kind) -> Result<(), Error> {
         Text(n) => {
             bounded_text(v, n)?;
         }
+        Utc => {
+            let s = bounded_text(v, 32)?;
+            let b = s.as_bytes();
+            if b.len() < 20
+                || b[4] != b'-'
+                || b[7] != b'-'
+                || b[10] != b'T'
+                || b[13] != b':'
+                || b[16] != b':'
+                || b.last() != Some(&b'Z')
+                || !b[..19]
+                    .iter()
+                    .enumerate()
+                    .all(|(i, c)| matches!(i, 4 | 7 | 10 | 13 | 16) || c.is_ascii_digit())
+                || (b.len() > 20
+                    && (b[19] != b'.' || !b[20..b.len() - 1].iter().all(u8::is_ascii_digit)))
+            {
+                return Err(Error::InvalidValue);
+            }
+        }
         Bool => {
             v.boolean()?;
         }
@@ -196,6 +218,21 @@ fn validate(v: Value<'_>, kind: Kind) -> Result<(), Error> {
         NullableU => {
             if !v.is_null() {
                 v.uint()?;
+            }
+        }
+        Target => {
+            let mut items = v.array()?;
+            let device = items.next().ok_or(Error::InvalidLength)?;
+            let pool = items.next().ok_or(Error::InvalidLength)?;
+            let incarnation = items.next().ok_or(Error::InvalidLength)?;
+            if items.next().is_some() {
+                return Err(Error::InvalidLength);
+            }
+            validate(device, B(16))?;
+            validate(pool, NullB(28))?;
+            validate(incarnation, NullB(16))?;
+            if pool.is_null() != incarnation.is_null() {
+                return Err(Error::InvalidValue);
             }
         }
         Network => schema(v.map()?, NETWORK)?,
@@ -214,6 +251,8 @@ fn validate(v: Value<'_>, kind: Kind) -> Result<(), Error> {
                         f("incarnation", B(16)),
                         f("revision", U),
                         f("credential_epoch", U),
+                        f("management_sequence", U),
+                        f("deleted", Bool),
                         f("revoked", Bool),
                         f("health", Health),
                         f("active", NullB(16)),
@@ -441,6 +480,7 @@ impl<'a> Envelope<'a> {
                 f("budget_ms", U32),
                 f("op", Text(32)),
                 f("payload", Payload),
+                o("target", Target),
             ],
             EnvelopeKind::LocalResponse => &[
                 f("version", U),
@@ -527,9 +567,28 @@ impl<'a> Envelope<'a> {
             None
         };
         if let Some(status) = status {
-            response_payload(operation, status, payload)?;
+            if kind == EnvelopeKind::LocalResponse
+                && operation == Operation::Status
+                && status == Status::Ok
+            {
+                local_status_payload(payload)?;
+            } else {
+                response_payload(operation, status, payload)?;
+            }
         } else {
-            request_payload(operation, payload)?;
+            if kind == EnvelopeKind::LocalRequest && operation == Operation::Status {
+                schema(
+                    payload,
+                    &[o("generation", B(16)), o("host_diagnostics", Bool)],
+                )?;
+                if let Some(value) = payload.get("host_diagnostics")?
+                    && !value.boolean()?
+                {
+                    return Err(Error::InvalidValue);
+                }
+            } else {
+                request_payload(operation, payload)?;
+            }
         }
         if operation == Operation::Manage && !response {
             if let Some(device) = map.get("device")?
@@ -720,6 +779,151 @@ fn context(m: Map<'_>, extra: &[Field]) -> Result<(), Error> {
     }
     Ok(())
 }
+
+// Local diagnostics are positional arrays to stay within the four-level CBOR
+// nesting bound. They are never accepted in authenticated device responses.
+fn tuple(value: Value<'_>, kinds: &[Kind]) -> Result<(), Error> {
+    let mut values = value.array()?;
+    for kind in kinds {
+        validate(values.next().ok_or(Error::InvalidLength)?, *kind)?;
+    }
+    if values.next().is_some() {
+        return Err(Error::InvalidLength);
+    }
+    Ok(())
+}
+
+const HOST_CONTEXT: &[Kind] = &[
+    B(16),
+    B(32),
+    B(16),
+    B(28),
+    B(16),
+    U32,
+    B(32),
+    Positive,
+    Lifetime,
+    NullB(16),
+    NullB(32),
+    NullableU,
+];
+
+fn local_status_payload(m: Map<'_>) -> Result<(), Error> {
+    // Validate the unchanged wire subset separately, closing both schemas.
+    for entry in m {
+        let (key, value) = entry?;
+        match key {
+            "host_device" => validate(value, B(16))?,
+            "host_pool" => validate(value, NullB(28))?,
+            "host_incarnation" => validate(value, NullB(16))?,
+            "host_observation" if !value.is_null() => {
+                let mut a = value.array()?;
+                one_of(
+                    a.next().ok_or(Error::InvalidLength)?,
+                    &["fresh", "stale", "unavailable"],
+                )?;
+                for k in [NullableU, NullableU, Utc, Utc] {
+                    let v = a.next().ok_or(Error::InvalidLength)?;
+                    if !v.is_null() {
+                        validate(v, k)?;
+                    }
+                }
+                let context = a.next().ok_or(Error::InvalidLength)?;
+                if !context.is_null() {
+                    tuple(context, HOST_CONTEXT)?;
+                }
+                let historical = a.next().ok_or(Error::InvalidLength)?;
+                validate(historical, NullableDescriptor)?;
+                let ready = a.next().ok_or(Error::InvalidLength)?;
+                if !ready.is_null() {
+                    validate(ready, Bool)?;
+                }
+                validate(a.next().ok_or(Error::InvalidLength)?, NullableU)?;
+                if a.next().is_some() {
+                    return Err(Error::InvalidLength);
+                }
+            }
+            "host_latency" if !value.is_null() => {
+                let mut a = value.array()?;
+                for _ in 0..8 {
+                    let v = a.next().ok_or(Error::InvalidLength)?;
+                    if !v.is_null() {
+                        tuple(
+                            v,
+                            &[
+                                B(16),
+                                U,
+                                Text(7),
+                                Text(64),
+                                Utc,
+                                U,
+                                B(16),
+                                B(32),
+                                B(16),
+                                B(28),
+                                B(16),
+                                U32,
+                                B(32),
+                                Positive,
+                                Lifetime,
+                                NullB(16),
+                                NullB(32),
+                                NullableU,
+                            ],
+                        )?;
+                        let mut fields = v.array()?;
+                        let outcome = fields.nth(2).ok_or(Error::InvalidLength)?;
+                        one_of(outcome, &["success", "error"])?;
+                        Status::parse(fields.next().ok_or(Error::InvalidLength)?.text()?)?;
+                    }
+                }
+                if a.next().is_some() {
+                    return Err(Error::InvalidLength);
+                }
+            }
+            "host_observation" | "host_latency" => {}
+            _ => {
+                let field = STATUS_FIELDS
+                    .iter()
+                    .find(|f| f.name == key)
+                    .ok_or(Error::UnknownField)?;
+                validate(value, field.kind)?;
+            }
+        }
+    }
+    for field in STATUS_FIELDS {
+        if !field.optional {
+            m.required(field.name)?;
+        }
+    }
+    let count = [
+        "host_device",
+        "host_pool",
+        "host_incarnation",
+        "host_observation",
+        "host_latency",
+    ]
+    .iter()
+    .filter(|key| m.get(key).ok().flatten().is_some())
+    .count();
+    if count != 0 && count != 5 {
+        return Err(Error::MissingField);
+    }
+    Ok(())
+}
+
+const STATUS_FIELDS: &[Field] = &[
+    f("health", Health),
+    f("security_mode", Security),
+    f("revision", U),
+    f("credential_epoch", U),
+    f("revoked", Bool),
+    f("active", NullableDescriptor),
+    f("staged", NullableDescriptor),
+    f("blocking_reason", Text(256)),
+    f("directory", Descriptors),
+    o("management_sequence", U),
+];
 fn response_payload(op: Operation, status: Status, m: Map<'_>) -> Result<(), Error> {
     if status == Status::InProgress {
         if !matches!(op, Operation::Generate | Operation::OpStatus) {
@@ -770,21 +974,12 @@ fn response_payload(op: Operation, status: Status, m: Map<'_>) -> Result<(), Err
                 m,
                 &[f("session", B(16)), f("challenge_acknowledgement", B(32))],
             ),
-            Status => schema(
-                m,
-                &[
-                    f("health", Health),
-                    f("security_mode", Security),
-                    f("revision", U),
-                    f("credential_epoch", U),
-                    f("revoked", Bool),
-                    f("active", NullableDescriptor),
-                    f("staged", NullableDescriptor),
-                    f("blocking_reason", Text(256)),
-                    f("directory", Descriptors),
-                ],
-            ),
-            Generate | OpStatus => schema(m, DESCRIPTOR),
+            Status => schema(m, STATUS_FIELDS),
+            Generate => schema(m, DESCRIPTOR),
+            OpStatus if m.get("management_sequence")?.is_some() => {
+                schema(m, &[f("management_sequence", U), f("revision", U)])
+            }
+            OpStatus => schema(m, DESCRIPTOR),
             GetBackup => schema(
                 m,
                 &[

@@ -1,6 +1,6 @@
 use crate::backup::{publication::Error as PublicationError, recipient, recover};
 use crate::host::client::{self, Error as ClientError};
-use crate::host::config::{Error as ConfigError, PoolConnection};
+use crate::host::config::{Error as ConfigError, PublicPoolConnection};
 use crate::host::publication;
 use sha2::{Digest, Sha256};
 use std::ffi::OsString;
@@ -39,6 +39,10 @@ fn run_recover(arguments: Vec<OsString>) -> ExitCode {
     };
     let passphrase = match recipient::prompt_existing_passphrase() {
         Ok(passphrase) => passphrase,
+        Err(recipient::Error::MemoryProtection) => {
+            eprintln!("recovery requires a fresh no-swap, non-dumpable process");
+            return ExitCode::from(5);
+        }
         Err(_) => {
             eprintln!("recipient passphrase input unavailable or invalid");
             return ExitCode::from(2);
@@ -80,7 +84,7 @@ fn run_fetch(arguments: Vec<OsString>) -> ExitCode {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return ExitCode::from(7),
     }
-    let connection = match PoolConnection::load(&connection_path) {
+    let connection = match PublicPoolConnection::load(&connection_path) {
         Ok(connection) => connection,
         Err(ConfigError::Security) => {
             eprintln!("connection authentication binding mismatch");

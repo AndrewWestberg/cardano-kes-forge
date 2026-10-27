@@ -1,3 +1,6 @@
+use cardano_kes_forge::host::client::{DeviceWire, Error as ClientError};
+use cardano_kes_forge::host::config::{DeviceConfig, DeviceIdentity, PoolConnection};
+use cardano_kes_forge::host::daemon::{AuthenticatedTransport, Config, Daemon};
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::cbor::Encoder;
 use kes_protocol::{Envelope, EnvelopeKind, Operation};
@@ -9,8 +12,10 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
+use std::time::{Duration, Instant};
 
 const DEVICE: &str = "10101010101010101010101010101010";
 const POOL: &str = "20202020202020202020202020202020202020202020202020202020";
@@ -269,13 +274,22 @@ fn response(
     request: [u8; 16],
     payload: impl FnOnce(&mut Encoder<'_>),
 ) -> Vec<u8> {
+    response_status(operation, request, "OK", payload)
+}
+
+fn response_status(
+    operation: Operation,
+    request: [u8; 16],
+    status: &str,
+    payload: impl FnOnce(&mut Encoder<'_>),
+) -> Vec<u8> {
     let mut storage = [0; kes_protocol::MAX_FRAME_BYTES];
     let mut encoder = Encoder::new(&mut storage);
     encoder.map(6).unwrap();
     encoder.text("op").unwrap();
     encoder.text(operation.as_str()).unwrap();
     encoder.text("status").unwrap();
-    encoder.text("OK").unwrap();
+    encoder.text(status).unwrap();
     encoder.text("payload").unwrap();
     payload(&mut encoder);
     encoder.text("request").unwrap();
@@ -339,6 +353,14 @@ fn read_request(stream: &mut std::os::unix::net::UnixStream) -> (Operation, [u8;
     let mut body = vec![0; length];
     stream.read_exact(&mut body).unwrap();
     let request = Envelope::parse(&body, EnvelopeKind::LocalRequest).unwrap();
+    let mut target = request.map().required("target").unwrap().array().unwrap();
+    assert_eq!(target.next().unwrap().bytes().unwrap(), bytes::<16>(DEVICE));
+    assert_eq!(target.next().unwrap().bytes().unwrap(), bytes::<28>(POOL));
+    assert_eq!(
+        target.next().unwrap().bytes().unwrap(),
+        bytes::<16>(INCARNATION)
+    );
+    assert!(target.next().is_none());
     (request.operation, *request.request().unwrap().as_bytes())
 }
 
@@ -347,6 +369,34 @@ fn send_response(mut stream: std::os::unix::net::UnixStream, body: &[u8]) {
         .write_all(&(body.len() as u32).to_be_bytes())
         .unwrap();
     stream.write_all(body).unwrap();
+}
+
+fn send_initial_status(listener: &UnixListener) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let (operation, request) = read_request(&mut stream);
+    assert_eq!(operation, Operation::Status);
+    let status = response(Operation::Status, request, |e| {
+        e.map(9).unwrap();
+        e.text("active").unwrap();
+        e.null().unwrap();
+        e.text("health").unwrap();
+        e.text("healthy").unwrap();
+        e.text("staged").unwrap();
+        e.null().unwrap();
+        e.text("revoked").unwrap();
+        e.boolean(false).unwrap();
+        e.text("revision").unwrap();
+        e.uint(0).unwrap();
+        e.text("directory").unwrap();
+        e.array(0).unwrap();
+        e.text("security_mode").unwrap();
+        e.text("development").unwrap();
+        e.text("blocking_reason").unwrap();
+        e.text("fixture").unwrap();
+        e.text("credential_epoch").unwrap();
+        e.uint(0).unwrap();
+    });
+    send_response(stream, &status);
 }
 
 fn spawn_generation_service(
@@ -363,6 +413,7 @@ fn spawn_generation_artifact_service(
     let listener = UnixListener::bind(&fixture.socket).unwrap();
     let service_artifact = artifact.clone();
     let handle = thread::spawn(move || {
+        send_initial_status(&listener);
         let (mut generate, _) = listener.accept().unwrap();
         let (operation, request) = read_request(&mut generate);
         assert_eq!(operation, Operation::Generate);
@@ -415,6 +466,7 @@ fn spawn_reconciliation_service(fixture: &Fixture) -> (Vec<u8>, thread::JoinHand
     let artifact = signed_artifact(bytes(POOL));
     let service_artifact = artifact.clone();
     let handle = thread::spawn(move || {
+        send_initial_status(&listener);
         let (mut generate, _) = listener.accept().unwrap();
         let (operation, _) = read_request(&mut generate);
         assert_eq!(operation, Operation::Generate);
@@ -464,6 +516,7 @@ fn lost_generation_response_reconciles_by_durable_request_identity() {
 #[test]
 fn generation_publishes_decoded_identity_and_repairs_exact_partial_outputs() {
     let fixture = Fixture::new(POOL);
+    fs::remove_file(fixture.root.join("pool.credential.json")).unwrap();
     let (artifact, service) = spawn_generation_service(&fixture, bytes(POOL));
     assert_eq!(run(fixture.generation_args()).status.code(), Some(0));
     service.join().unwrap();
@@ -541,7 +594,7 @@ fn unrelated_existing_output_is_rejected_before_any_missing_output_is_created() 
 fn signed_artifact_with_wrong_pool_is_rejected_before_publication() {
     let fixture = Fixture::new(POOL);
     let (_, service) = spawn_generation_service(&fixture, bytes(OTHER_POOL));
-    assert_eq!(run(fixture.generation_args()).status.code(), Some(7));
+    assert_eq!(run(fixture.generation_args()).status.code(), Some(6));
     service.join().unwrap();
     fs::remove_file(&fixture.socket).unwrap();
     assert!(fixture.outputs().iter().all(|path| !path.exists()));
@@ -552,7 +605,7 @@ fn signed_artifact_with_wrong_recipient_identity_is_rejected_before_publication(
     let fixture = Fixture::new(POOL);
     let artifact = signed_artifact_with_recipient(bytes(POOL), [0x76; 32]);
     let (_, service) = spawn_generation_artifact_service(&fixture, artifact);
-    assert_eq!(run(fixture.generation_args()).status.code(), Some(7));
+    assert_eq!(run(fixture.generation_args()).status.code(), Some(6));
     service.join().unwrap();
     fs::remove_file(&fixture.socket).unwrap();
     assert!(fixture.outputs().iter().all(|path| !path.exists()));
@@ -604,10 +657,154 @@ fn host_generation_aliases_and_plaintext_output_are_rejected_as_usage() {
 
 #[test]
 fn pool_binding_mismatch_is_an_authentication_error_before_dispatch() {
-    let fixture = Fixture::new(OTHER_POOL);
-    let output = run(fixture.generation_args());
-    assert_eq!(output.status.code(), Some(3));
-    assert!(fixture.outputs().iter().all(|path| !path.exists()));
+    struct RefuseDevice(Arc<AtomicUsize>);
+    impl DeviceWire for RefuseDevice {
+        fn exchange(
+            &mut self,
+            _request: &[u8],
+            _response: &mut [u8; kes_protocol::MAX_FRAME_BYTES],
+            _timeout: Duration,
+        ) -> Result<usize, ClientError> {
+            self.0.fetch_add(1, Ordering::AcqRel);
+            Err(ClientError::Unavailable)
+        }
+    }
+    let fixture = Fixture::new(POOL);
+    let pool = PoolConnection::load(&fixture.connection).unwrap();
+    let credential = PoolConnection::load(&fixture.connection)
+        .unwrap()
+        .credential;
+    let management = DeviceConfig {
+        socket_path: fixture.socket.clone(),
+        device_id: bytes(DEVICE),
+        device_identity_file: fixture.root.join("device.identity.json"),
+        connection_name: "management".to_owned(),
+        credential_file: fixture.root.join("pool.credential.json"),
+        credential,
+        identity: DeviceIdentity::load(&fixture.root.join("device.identity.json")).unwrap(),
+        security_policy: "isolated-development".to_owned(),
+    };
+    let calls = Arc::new(AtomicUsize::new(0));
+    let transport =
+        AuthenticatedTransport::new(RefuseDevice(Arc::clone(&calls)), management, vec![pool])
+            .unwrap();
+    let daemon = Daemon::new(
+        Config {
+            management_connection: "management".to_owned(),
+            pool_connections: vec!["pool-0".to_owned()],
+            allowed_peer_uids: vec![(
+                rustix::process::getuid().as_raw(),
+                vec!["pool-0".to_owned()],
+            )],
+        },
+        transport,
+    )
+    .unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = Arc::clone(&stop);
+    let socket = fixture.socket.clone();
+    let server = thread::spawn(move || daemon.serve_until(&socket, &thread_stop).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !fixture.socket.exists() {
+        assert!(Instant::now() < deadline, "daemon did not bind");
+        thread::sleep(Duration::from_millis(5));
+    }
+    fs::remove_file(fixture.root.join("pool.credential.json")).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_slice(&fs::read(&fixture.connection).unwrap()).unwrap();
+    for (field, wrong) in [
+        ("poolId", OTHER_POOL),
+        ("deviceId", "11111111111111111111111111111111"),
+        ("incarnationId", "31313131313131313131313131313131"),
+    ] {
+        let mut config = original.clone();
+        config[field] = wrong.into();
+        write(
+            &fixture.connection,
+            &serde_json::to_string(&config).unwrap(),
+            0o644,
+        );
+        let mut args = fixture.generation_args();
+        *args.last_mut().unwrap() = fixture.root.join(format!("{field}.json")).into_os_string();
+        assert_eq!(run(args).status.code(), Some(3));
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+        assert!(fixture.outputs().iter().all(|path| !path.exists()));
+    }
+    // These valid socket requests exercise device and scope refusal against
+    // the daemon's actual configured pins, not public-file consistency checks.
+    for (device, pool, incarnation, status) in [
+        (
+            [0x11; 16],
+            Some(bytes::<28>(POOL)),
+            Some(bytes::<16>(INCARNATION)),
+            kes_protocol::Status::WrongDevice,
+        ),
+        (
+            bytes::<16>(DEVICE),
+            None,
+            None,
+            kes_protocol::Status::WrongPool,
+        ),
+    ] {
+        let mut storage = [0; kes_protocol::MAX_FRAME_BYTES];
+        let mut encoder = Encoder::new(&mut storage);
+        encoder.map(7).unwrap();
+        encoder.text("op").unwrap();
+        encoder.text("STATUS").unwrap();
+        encoder.text("target").unwrap();
+        encoder.array(3).unwrap();
+        encoder.bytes(&device).unwrap();
+        match pool {
+            Some(id) => encoder.bytes(&id).unwrap(),
+            None => encoder.null().unwrap(),
+        }
+        match incarnation {
+            Some(id) => encoder.bytes(&id).unwrap(),
+            None => encoder.null().unwrap(),
+        }
+        encoder.text("payload").unwrap();
+        encoder.map(0).unwrap();
+        encoder.text("request").unwrap();
+        encoder.bytes(&bytes::<16>(REQUEST)).unwrap();
+        encoder.text("version").unwrap();
+        encoder.uint(1).unwrap();
+        encoder.text("budget_ms").unwrap();
+        encoder.uint(2000).unwrap();
+        encoder.text("connection").unwrap();
+        encoder.text("pool-0").unwrap();
+        let encoded = encoder.finish().unwrap().encoded();
+        let mut stream = std::os::unix::net::UnixStream::connect(&fixture.socket).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        stream
+            .write_all(&(encoded.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(encoded).unwrap();
+        let mut prefix = [0; 4];
+        stream.read_exact(&mut prefix).unwrap();
+        let length = u32::from_be_bytes(prefix) as usize;
+        assert!(length <= storage.len());
+        stream.read_exact(&mut storage[..length]).unwrap();
+        assert_eq!(
+            Envelope::parse(&storage[..length], EnvelopeKind::LocalResponse)
+                .unwrap()
+                .status,
+            Some(status)
+        );
+        assert_eq!(calls.load(Ordering::Acquire), 0);
+    }
+    // A matching target reaches the real transport even though no private file
+    // remains available to the CLI; the deliberately refusing wire stays failed.
+    write(
+        &fixture.connection,
+        &serde_json::to_string(&original).unwrap(),
+        0o644,
+    );
+    assert_eq!(run(fixture.generation_args()).status.code(), Some(5));
+    assert!(calls.load(Ordering::Acquire) > 0);
+    stop.store(true, Ordering::Release);
+    server.join().unwrap();
 }
 
 #[test]
@@ -628,4 +825,66 @@ fn every_preexisting_generation_output_is_preserved_without_dispatch() {
             }
         }
     }
+}
+
+#[test]
+fn generation_json_reports_pending_without_publishing_outputs() {
+    let fixture = Fixture::new(POOL);
+    let listener = UnixListener::bind(&fixture.socket).unwrap();
+    let service = thread::spawn(move || {
+        send_initial_status(&listener);
+        let (mut stream, _) = listener.accept().unwrap();
+        let (operation, request) = read_request(&mut stream);
+        assert_eq!(operation, Operation::Generate);
+        let reply = response_status(operation, request, "IN_PROGRESS", |encoder| {
+            encoder.map(2).unwrap();
+            encoder.text("request").unwrap();
+            encoder.bytes(&request).unwrap();
+            encoder.text("generation_number").unwrap();
+            encoder.uint(1).unwrap();
+        });
+        send_response(stream, &reply);
+        let (mut stream, _) = listener.accept().unwrap();
+        let (operation, request) = read_request(&mut stream);
+        assert_eq!(operation, Operation::OpStatus);
+        let reply = response_status(operation, request, "IN_PROGRESS", |encoder| {
+            encoder.map(2).unwrap();
+            encoder.text("request").unwrap();
+            encoder.bytes(&request).unwrap();
+            encoder.text("generation_number").unwrap();
+            encoder.uint(1).unwrap();
+        });
+        send_response(stream, &reply);
+    });
+    let mut args = fixture.generation_args();
+    args.push("--json".into());
+    let output = run(args);
+    service.join().unwrap();
+    assert_eq!(output.status.code(), Some(4));
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["code"], "IN_PROGRESS");
+    assert_eq!(error["requestId"], REQUEST);
+    assert_eq!(error["deviceId"], DEVICE);
+    assert_eq!(error["poolId"], POOL);
+    assert!(output.stdout.is_empty());
+    assert!(fixture.outputs().iter().all(|path| !path.exists()));
+}
+
+#[test]
+fn generation_json_success_binds_committed_public_result() {
+    let fixture = Fixture::new(POOL);
+    let (_, service) = spawn_generation_service(&fixture, bytes::<28>(POOL));
+    let mut args = fixture.generation_args();
+    args.push("--json".into());
+    let output = run(args);
+    service.join().unwrap();
+    assert!(output.status.success());
+    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["operation"], "GENERATE");
+    assert_eq!(result["requestId"], REQUEST);
+    assert_eq!(result["deviceId"], DEVICE);
+    assert_eq!(result["poolId"], POOL);
+    assert_eq!(result["generationId"], GENERATION);
+    assert_eq!(result["revision"], 1);
+    assert!(fixture.outputs().iter().all(|path| path.exists()));
 }

@@ -78,6 +78,9 @@ pub fn prepare_delete(
     envelope: &VerifiedEnvelope<'_>,
 ) -> Result<PreparationOutcome, Error> {
     Device::from_authenticated_snapshot(directory)?;
+    if directory.pending_enrollment.is_some() {
+        return Err(Error::State(StateError::InvalidLifecycle));
+    }
     let fields = envelope.fields();
     if fields.action != Action::PoolDelete {
         return Err(Error::WrongAction);
@@ -180,6 +183,7 @@ pub fn prepare_delete(
         tombstone: PoolTombstone {
             pool_id: target_pool,
             last_incarnation: incarnation,
+            credential_epoch: Some(pool.credential_epoch()),
             management_sequence: fields.sequence,
             certificate_high_water: pool.certificate_high_water(),
             generation_high_water: pool.generation_high_water(),
@@ -333,7 +337,7 @@ pub fn reenroll(
     envelope: &VerifiedEnvelope<'_>,
 ) -> Result<ReenrollmentOutcome, Error> {
     Device::from_authenticated_snapshot(directory)?;
-    if directory.pending_deletion.is_some() {
+    if directory.pending_deletion.is_some() || directory.pending_enrollment.is_some() {
         return Err(Error::State(StateError::InvalidLifecycle));
     }
     let fields = envelope.fields();

@@ -46,12 +46,28 @@ fn options<'a>(args: &'a [String], names: &[&str]) -> evidence::Result<BTreeMap<
 fn dispatch(args: &[String]) -> evidence::Result<()> {
     match args.first().map(String::as_str) {
         Some("--version") if args.len() == 1 => println!("xtask {}", env!("CARGO_PKG_VERSION")),
-        Some("--help") if args.len() == 1 => println!(
-            "Usage: xtask toolchain | freeze --workspace DIR --definition FILE --approval FILE --evidence DIR\n       xtask gate run --candidate DIR --gate ID\n       xtask gate NAME --evidence DIR  (approved gate-run child)\n       xtask acceptance --candidate DIR\n       xtask fixture create --network controlled --pools 32 --out-dir DIR\n       xtask qualify feasibility --fixture FILE --evidence DIR\n       xtask qualify security-modes --hardware yes|no --evidence DIR\n       xtask qualify load --fixture FILE --rounds N --evidence DIR\n       xtask qualify management-software --evidence DIR\n       xtask qualify power-loss-software --evidence DIR\n       xtask qualify power-loss --fixture FILE --cuts N --evidence DIR\n       xtask oracle self-check  (isolated disposable native lab only)"
-        ),
+        Some("--help") if args.len() == 1 => {
+            println!(
+                "Usage: xtask toolchain | freeze --workspace DIR --definition FILE --approval FILE --evidence DIR\n       xtask gate run --candidate DIR --gate ID\n       xtask gate NAME --evidence DIR  (approved gate-run child)\n       xtask acceptance --candidate DIR\n       xtask package --workspace DIR --profile primary|recovery|management|provisioning|development --out-dir NEW_DIR\n       xtask fixture create --network controlled --pools 32 --out-dir DIR\n       xtask qualify feasibility --fixture FILE --evidence DIR\n       xtask qualify security-modes --hardware yes|no --evidence DIR\n       xtask qualify load --fixture FILE --rounds N --evidence DIR\n       xtask qualify load-software --evidence DIR\n       xtask qualify management-software --evidence DIR\n       xtask qualify power-loss-software --evidence DIR\n       xtask qualify power-loss --fixture FILE --cuts N --evidence DIR\n       xtask oracle self-check  (isolated disposable native lab only)"
+            );
+            println!("       xtask qualify recovery-files --fixture FILE --evidence DIR");
+            println!("       xtask qualify interop --fixture FILE --evidence DIR");
+        }
         Some("toolchain") if args.len() == 1 => toolchain()?,
         Some("oracle") if args.len() == 2 && args[1] == "self-check" => {
             println!("{}", xtask::oracles::self_check()?);
+        }
+        Some("package") => {
+            let opts = options(&args[1..], &["--workspace", "--profile", "--out-dir"])?;
+            let result = xtask::package::build(
+                Path::new(opts["--workspace"]),
+                xtask::package::Profile::parse(opts["--profile"])?,
+                Path::new(opts["--out-dir"]),
+            )?;
+            println!(
+                "{}",
+                serde_json::to_string(&result).map_err(|error| error.to_string())?
+            );
         }
         Some("fixture") if args.get(1).is_some_and(|arg| arg == "create") => {
             let opts = options(&args[2..], &["--network", "--pools", "--out-dir"])?;
@@ -91,9 +107,57 @@ fn dispatch(args: &[String]) -> evidence::Result<()> {
                 Path::new(opts["--evidence"]),
             )?;
         }
+        Some("qualify") if args.get(1).is_some_and(|arg| arg == "load-software") => {
+            let opts = options(&args[2..], &["--evidence"])?;
+            let result = qualify::load::software::run(Path::new(opts["--evidence"]))?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "version": 1,
+                    "campaign": "foundation-load-software",
+                    "verdict": "software-pass",
+                    "cases": result.cases,
+                    "deadline_misses": result.deadline_misses,
+                    "a4_p1_acceptance": false,
+                    "manifest": result.manifest,
+                })
+            );
+        }
         Some("qualify") if args.get(1).is_some_and(|arg| arg == "management-software") => {
             let opts = options(&args[2..], &["--evidence"])?;
             qualify_management_software(Path::new(opts["--evidence"]))?;
+        }
+        Some("qualify") if args.get(1).is_some_and(|arg| arg == "recovery-files") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            let input = std::fs::read(opts["--fixture"])
+                .map_err(|_| "recovery fixture unavailable".to_owned())?;
+            if input.len() > 16_384 {
+                return Err("recovery fixture exceeds size limit".into());
+            }
+            let inputs: qualify::recovery_files::Inputs = serde_json::from_slice(&input)
+                .map_err(|_| "invalid recovery fixture".to_owned())?;
+            let report = qualify::recovery_files::run(&inputs, Path::new(opts["--evidence"]))?;
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|error| error.to_string())?
+            );
+        }
+        Some("qualify") if args.get(1).is_some_and(|arg| arg == "interop") => {
+            let opts = options(&args[2..], &["--fixture", "--evidence"])?;
+            let input = std::fs::read(opts["--fixture"])
+                .map_err(|_| "interop fixture unavailable".to_owned())?;
+            if input.len() > 16_384 {
+                return Err("interop fixture exceeds size limit".into());
+            }
+            let inputs: qualify::interop::Inputs =
+                serde_json::from_slice(&input).map_err(|_| "invalid interop fixture".to_owned())?;
+            let report = qualify::interop::run(&inputs)?;
+            let path = Path::new(opts["--evidence"]).join("interop.json");
+            evidence::write_new_json(&path, &report)?;
+            println!(
+                "{}",
+                serde_json::to_string(&report).map_err(|error| error.to_string())?
+            );
         }
         Some("qualify") if args.get(1).is_some_and(|arg| arg == "power-loss-software") => {
             let opts = options(&args[2..], &["--evidence"])?;
@@ -300,7 +364,7 @@ fn qualify_feasibility(fixture: &Path, evidence_root: &Path) -> evidence::Result
     let load = qualify::load::run(fixture, 3, &load_directory)?;
     let faults = qualify::power_loss::run(
         fixture,
-        qualify::feasibility::FOUNDATION_BOUNDARIES.len() as u64,
+        qualify::power_loss::OPERATIONAL_BOUNDARIES.len() as u64,
         &faults_directory,
     )?;
     let summary = serde_json::json!({

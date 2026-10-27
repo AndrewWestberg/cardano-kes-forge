@@ -1,6 +1,6 @@
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::cbor::{Encoder, Value};
-use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
+use kes_core::crypto::{Generation, KesKey};
 use kes_core::directory;
 use kes_core::generation::{Admission, GenerationCoordinator, GenerationRequest, OperationStatus};
 use kes_core::journal::{DirectoryCodec, JournalContext, JournalScope, PoolCodec, SnapshotCodec};
@@ -262,6 +262,7 @@ fn signed_enrollment_binds_all_keys_and_exact_replay_returns_recorded_outcome() 
         retirement: None,
         credential: DeviceCredential::new([0x16; 32]),
         pending_deletion: None,
+        pending_enrollment: None,
         live,
         tombstones: [None; kes_core::state::DIRECTORY_IDENTITY_CAPACITY],
     };
@@ -372,13 +373,12 @@ fn directory_accepts_at_most_thirty_two_live_registrations_without_eviction() {
 fn staged_generation(pool: &PoolRegistration, id: GenerationId) -> KESGeneration {
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [0xb1; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut generation = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut generation = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         generation.step().unwrap();
     }
-    let verified = generation.finish().unwrap();
+    let (key, tree) = generation.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let object =
         PublicObject::from_parts(id, verified.as_bytes(), BACKUP, &verification_key).unwrap();

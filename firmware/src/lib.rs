@@ -1,8 +1,18 @@
 #![no_std]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod development;
+#[cfg(not(feature = "release"))]
+#[path = "development/directory.rs"]
+pub mod development_directory;
+#[cfg(not(feature = "release"))]
+#[path = "development/identity.rs"]
+pub mod development_identity;
 pub mod entropy;
+// The sole handwritten unsafe boundary is the RAM-resident RP2350 QMI read.
+#[allow(unsafe_code)]
+mod flash_identification;
+pub mod pool_service;
 pub mod recovery;
 pub mod scheduler;
 pub mod security;
@@ -10,6 +20,7 @@ pub mod security;
 pub mod storage;
 
 pub mod usb;
+pub mod update;
 #[cfg(not(target_arch = "arm"))]
 compile_error!("kes-firmware requires the thumbv8m.main-none-eabihf target");
 #[cfg(not(target_os = "none"))]

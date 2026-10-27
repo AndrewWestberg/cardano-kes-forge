@@ -29,11 +29,12 @@ fn generate<'tree>(
     key: &mut KesKey,
     tree: &'tree mut PublicTreeBuffer,
 ) -> VerifiedPublicTree<'tree> {
-    let mut job = Generation::begin(seed, key, tree).unwrap();
+    let mut job = Generation::begin(seed, key.lifetime()).unwrap();
     for leaf in 1..=64 {
         assert_eq!(job.step().unwrap(), leaf);
     }
-    job.finish().unwrap()
+    (*key, *tree) = job.finish().unwrap();
+    tree.verify(&key.verification_key().unwrap()).unwrap()
 }
 fn conventional_file(bytes: &[u8; 608]) -> Zeroizing<Vec<u8>> {
     let mut file = Zeroizing::new(Vec::with_capacity(1400));

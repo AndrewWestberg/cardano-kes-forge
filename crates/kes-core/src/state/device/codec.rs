@@ -14,8 +14,8 @@ impl SnapshotCodec for DirectoryCodec {
     ) -> Result<usize, JournalError> {
         validate(state, context)?;
         let mut e = Encoder::new(out);
-        e.array(8)?;
-        e.uint(3)?;
+        e.array(9)?;
+        e.uint(5)?;
         let c = &state.config;
         e.array(11)?;
         e.bytes(c.identity.device_id().as_bytes())?;
@@ -53,7 +53,7 @@ impl SnapshotCodec for DirectoryCodec {
         }
         e.array(state.tombstones.iter().flatten().count())?;
         for t in state.tombstones.iter().flatten() {
-            e.array(7)?;
+            e.array(8)?;
             e.bytes(t.pool_id.as_bytes())?;
             e.bytes(t.last_incarnation.as_bytes())?;
             e.uint(t.management_sequence.get())?;
@@ -61,6 +61,11 @@ impl SnapshotCodec for DirectoryCodec {
             e.uint(t.generation_high_water.get())?;
             e.uint(t.deletion_revision.get())?;
             encode_replay(&mut e, &t.management_replay)?;
+            if let Some(epoch) = t.credential_epoch {
+                e.uint(epoch.get())?;
+            } else {
+                e.null()?;
+            }
         }
         e.array(4)?;
         e.bytes(&state.credential.public_key)?;
@@ -77,7 +82,7 @@ impl SnapshotCodec for DirectoryCodec {
             e.uint(intent.expected_pool_revision.get())?;
             e.uint(intent.pool_cleanup_revision.get())?;
             let t = intent.tombstone;
-            e.array(7)?;
+            e.array(8)?;
             e.bytes(t.pool_id.as_bytes())?;
             e.bytes(t.last_incarnation.as_bytes())?;
             e.uint(t.management_sequence.get())?;
@@ -85,6 +90,30 @@ impl SnapshotCodec for DirectoryCodec {
             e.uint(t.generation_high_water.get())?;
             e.uint(t.deletion_revision.get())?;
             encode_replay(&mut e, &t.management_replay)?;
+            if let Some(epoch) = t.credential_epoch {
+                e.uint(epoch.get())?;
+            } else {
+                e.null()?;
+            }
+        } else {
+            e.null()?;
+        }
+        if let Some(intent) = state.pending_enrollment {
+            let v = intent.enrollment;
+            e.array(13)?;
+            e.uint(intent.slot.get() as u64)?;
+            e.bytes(v.incarnation.as_bytes())?;
+            e.bytes(&v.cold_verification_key)?;
+            e.uint(u64::from(v.network.network_magic()))?;
+            e.bytes(v.network.genesis_hash().as_bytes())?;
+            e.uint(v.network.slots_per_kes_period())?;
+            e.uint(u64::from(v.network.max_kes_evolutions()))?;
+            e.bytes(&v.machine_public_key)?;
+            e.bytes(&v.recipient_public_key)?;
+            e.bytes(&v.recipient_id)?;
+            e.uint(v.management_sequence.get())?;
+            e.bytes(v.management_request.as_bytes())?;
+            e.bytes(&v.management_payload_digest)?;
         } else {
             e.null()?;
         }
@@ -98,8 +127,11 @@ impl SnapshotCodec for DirectoryCodec {
         if input.len() > 7536 {
             return Err(JournalError::SizeLimit);
         }
-        let mut p = array(Value::parse(input)?, 8)?;
-        expect(&mut p, 3)?;
+        let mut p = array(Value::parse(input)?, 9)?;
+        let version = uint(&mut p)?;
+        if version != 4 && version != 5 {
+            return Err(StateError::InvalidObject.into());
+        }
         let mut c = array(next(&mut p)?, 11)?;
         let device = DeviceId::from_bytes(fixed(&mut c)?);
         let identity_key = fixed(&mut c)?;
@@ -168,7 +200,7 @@ impl SnapshotCodec for DirectoryCodec {
             let Some(value) = entries.next() else {
                 break;
             };
-            let mut t = array(value, 7)?;
+            let mut t = array(value, if version == 4 { 7 } else { 8 })?;
             *slot = Some(PoolTombstone {
                 pool_id: PoolId::from_bytes(fixed(&mut t)?),
                 last_incarnation: IncarnationId::from_bytes(fixed(&mut t)?),
@@ -177,6 +209,16 @@ impl SnapshotCodec for DirectoryCodec {
                 generation_high_water: GenerationNumber::new(uint(&mut t)?),
                 deletion_revision: Revision::new(uint(&mut t)?),
                 management_replay: decode_replay(next(&mut t)?)?,
+                credential_epoch: if version == 4 {
+                    None
+                } else {
+                    let value = next(&mut t)?;
+                    if value.is_null() {
+                        None
+                    } else {
+                        Some(CredentialEpoch::new(value.uint()?))
+                    }
+                },
             });
         }
         if entries.next().is_some() {
@@ -206,7 +248,7 @@ impl SnapshotCodec for DirectoryCodec {
                 .and_then(|slot| HardwareSlot::new(slot).map_err(|_| StateError::InvalidObject))?;
             let expected_pool_revision = Revision::new(uint(&mut intent)?);
             let pool_cleanup_revision = Revision::new(uint(&mut intent)?);
-            let mut t = array(next(&mut intent)?, 7)?;
+            let mut t = array(next(&mut intent)?, if version == 4 { 7 } else { 8 })?;
             Some(DeletionIntent {
                 slot,
                 expected_pool_revision,
@@ -219,8 +261,48 @@ impl SnapshotCodec for DirectoryCodec {
                     generation_high_water: GenerationNumber::new(uint(&mut t)?),
                     deletion_revision: Revision::new(uint(&mut t)?),
                     management_replay: decode_replay(next(&mut t)?)?,
+                    credential_epoch: if version == 4 {
+                        None
+                    } else {
+                        let value = next(&mut t)?;
+                        if value.is_null() {
+                            None
+                        } else {
+                            Some(CredentialEpoch::new(value.uint()?))
+                        }
+                    },
                 },
             })
+        };
+        let pending_value = next(&mut p)?;
+        let pending_enrollment = if pending_value.is_null() {
+            None
+        } else {
+            let mut v = array(pending_value, 13)?;
+            let slot = usize::try_from(uint(&mut v)?)
+                .map_err(|_| StateError::InvalidObject)
+                .and_then(|slot| HardwareSlot::new(slot).map_err(|_| StateError::InvalidObject))?;
+            let incarnation = IncarnationId::from_bytes(fixed(&mut v)?);
+            let cold_verification_key = fixed(&mut v)?;
+            let magic = u32::try_from(uint(&mut v)?).map_err(|_| StateError::InvalidObject)?;
+            let digest = crate::types::EnrolledGenesisHash::from_bytes(fixed(&mut v)?);
+            let slots = uint(&mut v)?;
+            let lifetime = uint(&mut v)?;
+            let network =
+                crate::types::NetworkBinding::from_enrolled_digest(magic, digest, slots, lifetime)
+                    .map_err(|_| StateError::InvalidObject)?;
+            let enrollment = super::super::pool::Enrollment {
+                incarnation,
+                cold_verification_key,
+                network,
+                machine_public_key: fixed(&mut v)?,
+                recipient_public_key: fixed(&mut v)?,
+                recipient_id: fixed(&mut v)?,
+                management_sequence: ManagementSequence::new(uint(&mut v)?),
+                management_request: crate::types::RequestId::from_bytes(fixed(&mut v)?),
+                management_payload_digest: fixed(&mut v)?,
+            };
+            Some(EnrollmentIntent { slot, enrollment })
         };
         let state = DirectorySnapshot {
             config,
@@ -228,6 +310,7 @@ impl SnapshotCodec for DirectoryCodec {
             retirement,
             credential,
             pending_deletion,
+            pending_enrollment,
             live,
             tombstones,
         };

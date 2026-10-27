@@ -1,4 +1,4 @@
-use ed25519_dalek::SigningKey;
+
 use kes_core::{
     activation::{ActivationRequest, CertificationRequest},
     cbor::Value,
@@ -157,11 +157,12 @@ fn finish_generation<'tree>(
     key: &mut KesKey,
     tree: &'tree mut PublicTreeBuffer,
 ) -> kes_core::crypto::VerifiedPublicTree<'tree> {
-    let mut job = begin_key_generation(rng, key, tree).unwrap();
+    let mut job = begin_key_generation(rng, key.lifetime()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    job.finish().unwrap()
+    (*key, *tree) = job.finish().unwrap();
+    tree.verify(&key.verification_key().unwrap()).unwrap()
 }
 
 fn with_changed_policy(pool: &PoolRegistration, policy_index: usize) -> PoolRegistration {
@@ -288,7 +289,7 @@ fn generation_completion_merges_after_active_signing_advances_revision() {
             replacement_key,
             &replacement_verified,
             DeviceId::from_bytes([0x83; 16]),
-            &SigningKey::from_bytes(&[0x84; 32]),
+            &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x84; 32])),
             &mut rng,
             &mut store,
             &mut [0; MAX_PUBLIC_OBJECT_BYTES],
@@ -320,7 +321,7 @@ fn recipient_or_credential_epoch_change_cancels_delayed_completion() {
                 key,
                 &verified,
                 DeviceId::from_bytes([0x92; 16]),
-                &SigningKey::from_bytes(&[0x93; 32]),
+                &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0x93; 32])),
                 &mut rng,
                 &mut store,
                 &mut [0; MAX_PUBLIC_OBJECT_BYTES],
@@ -397,7 +398,7 @@ fn interrupted_cleanup_and_delayed_reply_cannot_resurrect_orphaned_generation() 
             key,
             &verified,
             DeviceId::from_bytes([0xb3; 16]),
-            &SigningKey::from_bytes(&[0xb4; 32]),
+            &kes_core::session::DeviceIdentityKey::from_seed(zeroize::Zeroizing::new([0xb4; 32])),
             &mut rng,
             &mut store,
             &mut [0; MAX_PUBLIC_OBJECT_BYTES],

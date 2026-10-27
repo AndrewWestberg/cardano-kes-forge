@@ -1,3 +1,6 @@
+#[cfg(feature = "provisioning")]
+pub mod workstation;
+
 use super::bootstrap::{self, AuthorityRole, MachineScope};
 use super::config::{self, DeviceIdentity, decode_base64, decode_hex};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -61,6 +64,7 @@ pub struct Manifest {
     pub reviewer_public_key_file: PathBuf,
     pub reviewer_public_key_digest: String,
     pub steps: Vec<Step>,
+    #[serde(deserialize_with = "bootstrap::required_nullable")]
     pub signature: Option<String>,
 }
 
@@ -78,7 +82,6 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, Error> {
         || manifest.flash_capacity_bytes != 4_194_304
         || manifest.steps.is_empty()
         || manifest.steps.len() > 256
-        || manifest.security_version == 0
     {
         return Err(Error::InvalidSchema);
     }
@@ -191,6 +194,56 @@ pub fn validate_references(manifest: &Manifest, base: &Path) -> Result<(), Error
         .map_err(|_| Error::MissingPrerequisite)?;
     bootstrap::authority_public(&reviewer, AuthorityRole::ProvisioningReviewer)
         .map_err(|_| Error::AuthorityMismatch)?;
+    Ok(())
+}
+/// Bind the digest-authenticated ceremony authority files to the independently
+/// pinned identity and reviewer. Hash and parse each same byte buffer.
+pub(crate) fn verify_reference_authorities(
+    manifest: &Manifest,
+    base: &Path,
+    identity: &DeviceIdentity,
+    trusted_reviewer: &[u8],
+) -> Result<(), Error> {
+    fn checked(path: &Path, expected: &str, base: &Path) -> Result<Vec<u8>, Error> {
+        let bytes = std::fs::read(resolve(base, path)).map_err(|_| Error::MissingPrerequisite)?;
+        let actual: [u8; 32] = Sha256::digest(&bytes).into();
+        if decode_hex::<32>(expected) != Some(actual) {
+            return Err(Error::DigestMismatch);
+        }
+        Ok(bytes)
+    }
+    let management = checked(
+        &manifest.management_public_key_file,
+        &manifest.management_public_key_digest,
+        base,
+    )?;
+    let transport = checked(
+        &manifest.management_transport_public_key_file,
+        &manifest.management_transport_public_key_digest,
+        base,
+    )?;
+    let reviewer = checked(
+        &manifest.reviewer_public_key_file,
+        &manifest.reviewer_public_key_digest,
+        base,
+    )?;
+    let management = bootstrap::authority_public(&management, AuthorityRole::Management)
+        .map_err(|_| Error::AuthorityMismatch)?;
+    let transport = bootstrap::machine_public(&transport, MachineScope::Management)
+        .map_err(|_| Error::AuthorityMismatch)?;
+    let reviewer = bootstrap::authority_public(&reviewer, AuthorityRole::ProvisioningReviewer)
+        .map_err(|_| Error::AuthorityMismatch)?;
+    let trusted =
+        bootstrap::authority_public(trusted_reviewer, AuthorityRole::ProvisioningReviewer)
+            .map_err(|_| Error::AuthorityMismatch)?;
+    if management.public_key != identity.management_public_key
+        || transport.public_key != identity.management_transport_public_key
+        || transport.device != identity.device_id
+        || transport.epoch != identity.credential_epoch
+        || reviewer.public_key != trusted.public_key
+    {
+        return Err(Error::AuthorityMismatch);
+    }
     Ok(())
 }
 
@@ -357,11 +410,14 @@ fn verify_json_signature(
     public_key: &[u8; 32],
 ) -> Result<(), Error> {
     let (message, signature) = json_signature_message(bytes, signature_field, domain)?;
+    let signature = signature.ok_or(Error::Unsigned)?;
     let key = VerifyingKey::from_bytes(public_key).map_err(|_| Error::Authentication)?;
     key.verify(&message, &Signature::from_bytes(&signature))
         .map_err(|_| Error::Authentication)
 }
 
+/// Build the exact signing transcript from a draft (`signature: null`) or a
+/// signed manifest. Verification still requires a present, valid signature.
 pub fn manifest_signature_message(bytes: &[u8]) -> Result<Vec<u8>, Error> {
     json_signature_message(
         bytes,
@@ -380,15 +436,19 @@ fn json_signature_message(
     bytes: &[u8],
     signature_field: &str,
     domain: &[u8],
-) -> Result<(Vec<u8>, [u8; 64]), Error> {
+) -> Result<(Vec<u8>, Option<[u8; 64]>), Error> {
     let mut value: Value = serde_json::from_slice(bytes).map_err(|_| Error::InvalidSchema)?;
     let object = value.as_object_mut().ok_or(Error::InvalidSchema)?;
-    let signature = object
-        .remove(signature_field)
-        .and_then(|value| value.as_str().map(str::to_owned))
-        .ok_or(Error::Unsigned)?;
-    let signature = decode_base64(&signature).ok_or(Error::InvalidSchema)?;
-    let signature: [u8; 64] = signature.try_into().map_err(|_| Error::InvalidSchema)?;
+    let signature = match object.remove(signature_field).ok_or(Error::Unsigned)? {
+        Value::Null => None,
+        Value::String(encoded) => Some(
+            decode_base64(&encoded)
+                .ok_or(Error::InvalidSchema)?
+                .try_into()
+                .map_err(|_| Error::InvalidSchema)?,
+        ),
+        _ => return Err(Error::InvalidSchema),
+    };
     let mut message = Vec::with_capacity(domain.len() + bytes.len());
     message.extend_from_slice(domain);
     encode_deterministic_json(&value, &mut message)?;

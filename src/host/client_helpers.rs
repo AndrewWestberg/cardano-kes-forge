@@ -1,5 +1,24 @@
 use super::*;
 
+pub(super) fn encode_local_target(
+    encoder: &mut Encoder<'_>,
+    connection: &LocalConnection<'_>,
+) -> Result<(), kes_core::cbor::Error> {
+    encoder.array(3)?;
+    match connection {
+        LocalConnection::Device(device) => {
+            encoder.bytes(&device.device_id)?;
+            encoder.null()?;
+            encoder.null()
+        }
+        LocalConnection::Pool(pool) => {
+            encoder.bytes(&pool.device_id)?;
+            encoder.bytes(&pool.pool_id)?;
+            encoder.bytes(&pool.incarnation_id)
+        }
+    }
+}
+
 pub(super) fn encode_info_request(
     request: [u8; 16],
     challenge: [u8; 32],
@@ -123,9 +142,29 @@ pub(super) fn encode_device_request(
     encoder.text("device").map_err(|_| Error::Integrity)?;
     encoder.bytes(&device).map_err(|_| Error::Integrity)?;
     encoder.text("payload").map_err(|_| Error::Integrity)?;
-    encoder
-        .value(Value::parse(payload.encoded()).map_err(|_| Error::Integrity)?)
-        .map_err(|_| Error::Integrity)?;
+    if operation == Operation::Status
+        && payload
+            .get("host_diagnostics")
+            .map_err(|_| Error::Integrity)?
+            .is_some()
+    {
+        encoder
+            .map(payload.len() - 1)
+            .map_err(|_| Error::Integrity)?;
+        for field in payload {
+            let (key, value) = field.map_err(|_| Error::Integrity)?;
+            if key != "host_diagnostics" {
+                encoder
+                    .text(key)
+                    .and_then(|()| encoder.value(value))
+                    .map_err(|_| Error::Integrity)?;
+            }
+        }
+    } else {
+        encoder
+            .value(Value::parse(payload.encoded()).map_err(|_| Error::Integrity)?)
+            .map_err(|_| Error::Integrity)?;
+    }
     encoder.text("request").map_err(|_| Error::Integrity)?;
     encoder.bytes(request).map_err(|_| Error::Integrity)?;
     encoder.text("session").map_err(|_| Error::Integrity)?;
@@ -193,6 +232,52 @@ pub(super) fn validate_info_identity(
     {
         return Err(Error::Security);
     }
+    Ok(())
+}
+
+pub(super) fn verify_release_info(
+    payload: Map<'_>,
+    binding: &SessionBinding<'_>,
+    challenge: [u8; 32],
+    boot_nonce: [u8; 32],
+) -> Result<(), Error> {
+    use crate::host::security::{self, Mode, Pins, ReadinessVerifier};
+    if binding.device != binding.identity.device_id {
+        return Err(Error::Security);
+    }
+    let record = binding
+        .identity
+        .verified_release_record()
+        .map_err(|_| Error::Security)?;
+    let silicon_revision = record
+        .silicon_revision
+        .strip_prefix('A')
+        .and_then(|value| value.parse::<u16>().ok())
+        .ok_or(Error::Security)?;
+    let pins = Pins {
+        device: binding.device,
+        identity_public_key: binding.identity_public_key,
+        silicon_revision,
+        rom_revision: record.rom_revision,
+        flash_part: record.flash_part,
+        flash_capacity_bytes: record.flash_capacity_bytes,
+        firmware_digest: binding.firmware_digest,
+        hardware_policy_digest: binding.hardware_policy_digest,
+        security_version: binding.security_version,
+    };
+    let bytes = payload
+        .required("capability_evidence")
+        .and_then(|v| v.bytes())
+        .map_err(|_| Error::Security)?;
+    let evidence = security::decode_online_evidence(bytes).map_err(|_| Error::Security)?;
+    if evidence.mode != Mode::ReleaseReady || evidence.boot_nonce != boot_nonce {
+        return Err(Error::Security);
+    }
+    // A new unpredictable challenge is generated for each INFO. Both signatures
+    // bind it; no evidence or roots supplied by the device become host pins.
+    ReadinessVerifier::default()
+        .verify(&pins, challenge, evidence, false)
+        .map_err(|_| Error::Security)?;
     Ok(())
 }
 

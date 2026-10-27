@@ -37,6 +37,16 @@ pub enum TransportError {
 /// response. A timeout after any device write must return `Uncertain`.
 pub trait DeviceTransport: Send + 'static {
     fn exchange(&mut self, frame: &mut Frame, remaining: Duration) -> Result<(), TransportError>;
+    fn exchange_admitted(
+        &mut self,
+        frame: &mut Frame,
+        remaining: Duration,
+        admitted: Instant,
+    ) -> Result<(), TransportError> {
+        let _ = admitted;
+        self.exchange(frame, remaining)
+    }
+    fn expired(&mut self, _frame: &Frame, _admitted: Instant) {}
 }
 
 #[derive(Debug)]
@@ -62,6 +72,7 @@ pub struct AuthenticatedTransport<W> {
     management_session: Option<AuthenticatedClient>,
     pool_sessions: Vec<Option<AuthenticatedClient>>,
     signing: signing::Router,
+    queue_elapsed: Duration,
 }
 
 impl<W: DeviceWire + Send + 'static> AuthenticatedTransport<W> {
@@ -91,13 +102,40 @@ impl<W: DeviceWire + Send + 'static> AuthenticatedTransport<W> {
             management_session: None,
             pool_sessions,
             signing,
+            queue_elapsed: Duration::ZERO,
         })
     }
 }
 
 impl<W: DeviceWire + Send + 'static> DeviceTransport for AuthenticatedTransport<W> {
+    fn exchange_admitted(
+        &mut self,
+        frame: &mut Frame,
+        remaining: Duration,
+        admitted: Instant,
+    ) -> Result<(), TransportError> {
+        self.queue_elapsed = admitted.elapsed();
+        self.exchange(frame, remaining)
+    }
+
+    fn expired(&mut self, frame: &Frame, admitted: Instant) {
+        if let Ok(request) = Envelope::parse(frame.as_slice(), EnvelopeKind::LocalRequest)
+            .or_else(|_| Envelope::parse(frame.as_slice(), EnvelopeKind::LocalResponse))
+            && let Ok(connection) = request.map().required("connection").and_then(|v| v.text())
+            && let Ok(id) = request.request()
+        {
+            self.signing.terminal_by_id(
+                connection,
+                request.operation,
+                *id.as_bytes(),
+                Status::DeadlineExceeded,
+                admitted.elapsed(),
+            );
+        }
+    }
     fn exchange(&mut self, frame: &mut Frame, remaining: Duration) -> Result<(), TransportError> {
         let started = Instant::now();
+        let queue_elapsed = std::mem::take(&mut self.queue_elapsed);
         let request = Envelope::parse(frame.as_slice(), EnvelopeKind::LocalRequest)
             .map_err(|_| TransportError::Unavailable)?;
         let connection = request
@@ -106,6 +144,61 @@ impl<W: DeviceWire + Send + 'static> DeviceTransport for AuthenticatedTransport<
             .and_then(|value| value.text())
             .map_err(|_| TransportError::Unavailable)?
             .to_owned();
+        if let Some(target) = request
+            .map()
+            .get("target")
+            .map_err(|_| TransportError::Unavailable)?
+        {
+            let (device, pool, incarnation, scope) =
+                if connection == self.management.connection_name {
+                    (self.management.device_id, None, None, Scope::Device)
+                } else {
+                    let index = *self
+                        .pool_routes
+                        .get(&connection)
+                        .ok_or(TransportError::Unavailable)?;
+                    let pool = &self.pools[index];
+                    (
+                        pool.device_id,
+                        Some(pool.pool_id),
+                        Some(pool.incarnation_id),
+                        Scope::Pool,
+                    )
+                };
+            let mut target = target.array().map_err(|_| TransportError::Unavailable)?;
+            // The envelope validator proves this fixed tuple's lengths and paired scope.
+            let expected_device = target.next().ok_or(TransportError::Unavailable)?;
+            let expected_pool = target.next().ok_or(TransportError::Unavailable)?;
+            let expected_incarnation = target.next().ok_or(TransportError::Unavailable)?;
+            let status = if expected_device.bytes().ok() != Some(device.as_slice()) {
+                Some(Status::WrongDevice)
+            } else if expected_pool.bytes().ok() != pool.as_ref().map(|id| id.as_slice())
+                || expected_incarnation.bytes().ok() != incarnation.as_ref().map(|id| id.as_slice())
+            {
+                Some(Status::WrongPool)
+            } else {
+                None
+            };
+            if let Some(status) = status {
+                let metadata = Metadata {
+                    connection,
+                    request: *request
+                        .request()
+                        .map_err(|_| TransportError::Unavailable)?
+                        .as_bytes(),
+                    operation: request.operation,
+                    scope,
+                };
+                return encode_error(frame, &metadata, status, "configured target mismatch")
+                    .map_err(|_| TransportError::Unavailable);
+            }
+        }
+        let diagnostics = request.operation == Operation::Status
+            && request
+                .payload()
+                .get("host_diagnostics")
+                .map_err(|_| TransportError::InvalidResponse)?
+                .is_some();
         let mut response = [0; MAX_FRAME_BYTES];
         let result = if connection == self.management.connection_name {
             if self.management_session.is_none() {
@@ -147,16 +240,38 @@ impl<W: DeviceWire + Send + 'static> DeviceTransport for AuthenticatedTransport<
                 boot_nonce: client.boot_nonce(),
                 session: client.session_id(),
             };
+            let operation_started = Instant::now();
             let result =
                 client.exchange_local(&mut self.wire, frame.as_slice(), &mut response, remaining);
             let result = match result {
                 Ok(length) => length,
                 Err(error) => {
                     self.pool_sessions[index] = None;
-                    self.signing.disconnect(&connection);
+                    let code = if operation_started.elapsed() >= remaining {
+                        Status::DeadlineExceeded
+                    } else {
+                        Status::DeviceUnavailable
+                    };
+                    self.signing.terminal(
+                        &connection,
+                        frame.as_slice(),
+                        code,
+                        queue_elapsed + started.elapsed(),
+                    );
                     return Err(transport_error(error));
                 }
             };
+            if operation_started.elapsed() >= remaining {
+                self.signing.terminal(
+                    &connection,
+                    frame.as_slice(),
+                    Status::DeadlineExceeded,
+                    queue_elapsed + started.elapsed(),
+                );
+                client.invalidate();
+                self.pool_sessions[index] = None;
+                return Err(TransportError::Unavailable);
+            }
             if self
                 .signing
                 .complete(
@@ -164,17 +279,48 @@ impl<W: DeviceWire + Send + 'static> DeviceTransport for AuthenticatedTransport<
                     frame.as_slice(),
                     &response[..result],
                     session,
-                    started.elapsed(),
+                    queue_elapsed + started.elapsed(),
                 )
                 .is_err()
             {
                 client.invalidate();
                 self.pool_sessions[index] = None;
-                self.signing.disconnect(&connection);
+                self.signing.terminal(
+                    &connection,
+                    frame.as_slice(),
+                    Status::InvalidFrame,
+                    queue_elapsed + started.elapsed(),
+                );
                 return Err(TransportError::InvalidResponse);
             }
             result
         };
+        if diagnostics {
+            let mut enriched = [0; MAX_FRAME_BYTES];
+            let (device, pool, incarnation) = if connection == self.management.connection_name {
+                (self.management.device_id, None, None)
+            } else {
+                let index = self.pool_routes[&connection];
+                let pool = &self.pools[index];
+                (
+                    pool.device_id,
+                    Some(pool.pool_id),
+                    Some(pool.incarnation_id),
+                )
+            };
+            let length = crate::host::client::operator_status::attach(
+                &response[..result],
+                &mut enriched,
+                &device,
+                pool.as_ref().zip(incarnation.as_ref()),
+                &self.signing,
+                &connection,
+            )
+            .map_err(|_| TransportError::InvalidResponse)?;
+            return frame
+                .replace(&enriched[..length])
+                .map_err(|_| TransportError::Unavailable);
+        }
         frame
             .replace(&response[..result])
             .map_err(|_| TransportError::Unavailable)
@@ -223,6 +369,7 @@ struct Job {
     frame: Frame,
     metadata: Metadata,
     deadline: Instant,
+    admitted: Instant,
     reply: mpsc::SyncSender<Frame>,
 }
 
@@ -392,7 +539,8 @@ fn serve_peer(
         )?;
         return socket::write_frame(&mut stream, &response);
     }
-    let deadline = Instant::now()
+    let admitted = Instant::now();
+    let deadline = admitted
         .checked_add(Duration::from_millis(u64::from(budget)))
         .unwrap_or_else(Instant::now);
     let (sender, receiver) = mpsc::sync_channel(1);
@@ -401,6 +549,7 @@ fn serve_peer(
         frame,
         metadata: metadata.clone(),
         deadline,
+        admitted,
         reply: sender,
     };
     match inner.scheduler.admit(cell, job) {
@@ -609,6 +758,7 @@ fn start_dispatcher(scheduler: Arc<Scheduler>, mut transport: impl DeviceTranspo
                 let mut job = scheduler.next();
                 let now = Instant::now();
                 if now >= job.deadline {
+                    transport.expired(&job.frame, job.admitted);
                     let metadata = job.metadata.clone();
                     let _ = encode_error(
                         &mut job.frame,
@@ -620,8 +770,11 @@ fn start_dispatcher(scheduler: Arc<Scheduler>, mut transport: impl DeviceTranspo
                     continue;
                 }
                 let remaining = job.deadline.saturating_duration_since(now);
-                match transport.exchange(&mut job.frame, remaining) {
+                match transport.exchange_admitted(&mut job.frame, remaining, job.admitted) {
                     Ok(()) if Instant::now() >= job.deadline => {
+                        if response_matches(&job) {
+                            transport.expired(&job.frame, job.admitted);
+                        }
                         let metadata = job.metadata.clone();
                         let _ = encode_error(
                             &mut job.frame,

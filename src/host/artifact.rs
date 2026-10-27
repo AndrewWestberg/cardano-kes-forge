@@ -1,11 +1,11 @@
-use crate::host::config::PoolConnection;
+use crate::host::config::PublicPoolConnection;
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use kes_core::cbor::Encoder;
 use kes_protocol::backup::BackupArtifact;
 use sha2::{Digest, Sha256};
 
 pub struct ExpectedArtifact<'a> {
-    pub connection: &'a PoolConnection,
+    pub connection: &'a PublicPoolConnection,
     pub generation: [u8; 16],
     pub verification_key: Option<[u8; 32]>,
     pub generation_number: Option<u64>,

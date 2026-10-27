@@ -270,7 +270,8 @@ fn parse_action(value: &str) -> Result<Action, Error> {
     }
 }
 
-fn validate_target(action: Action, target: Target) -> Result<(), Error> {
+/// Validate unsigned target shape only; this does not establish authority.
+pub fn validate_target(action: Action, target: Target) -> Result<(), Error> {
     let valid = match action {
         Action::Enroll | Action::RecipientReplace | Action::StagedDiscard | Action::PoolDelete => {
             matches!(target, Target::Pool { .. })
@@ -285,7 +286,9 @@ fn validate_target(action: Action, target: Target) -> Result<(), Error> {
     }
 }
 
-fn validate_payload(
+/// Validate unsigned canonical payload bindings; callers still need a verified
+/// management signature and durable replay/revision checks before any mutation.
+pub fn validate_payload(
     action: Action,
     value: Value<'_>,
     device: DeviceId,

@@ -13,3 +13,24 @@ hkdf.workspace = true
 sha2.workspace = true
 rand_chacha.workspace = true
 zeroize.workspace = true
+xtask = { path = "../../xtask" }
+
+[[test]]
+name = "firmware_pool_retrieval"
+required-features = ["kes-core/protected-runtime"]
+
+[[test]]
+name = "firmware_pool_activation"
+required-features = ["kes-core/protected-runtime"]
+
+[[test]]
+name = "firmware_pool_signing"
+required-features = ["kes-core/protected-runtime"]
+
+[[test]]
+name = "firmware_pool_observe"
+required-features = ["kes-core/protected-runtime"]
+
+[[test]]
+name = "firmware_device_retirement"
+required-features = ["kes-core/protected-runtime"]

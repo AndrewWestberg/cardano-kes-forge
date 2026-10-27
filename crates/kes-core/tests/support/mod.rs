@@ -2,7 +2,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use kes_core::{
     activation::DurablePool,
     cbor::Encoder,
-    crypto::{Generation, KesKey, PublicTreeBuffer},
+    crypto::{Generation, PublicTreeBuffer},
     journal::{
         Flash, FlashRules, Journal, JournalContext, JournalLayout, JournalScope, JournalWorkspace,
         ObjectWorkspace, PoolCodec, SecretCache, Workspaces,
@@ -235,13 +235,12 @@ impl Fixture {
         let mut seed = Zeroizing::new([0; 32]);
         entropy.try_fill_bytes(&mut *seed).unwrap();
         let lifetime = KesLifetime::new(64).unwrap();
-        let mut key = KesKey::erased(lifetime);
-        let mut tree = PublicTreeBuffer::new();
-        let mut generation_job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+        let mut generation_job = Generation::begin(&mut seed, lifetime).unwrap();
         for _ in 0..64 {
             generation_job.step().unwrap();
         }
-        let verified_tree = generation_job.finish().unwrap();
+        let (key, tree) = generation_job.finish().unwrap();
+        let verified_tree = tree.verify(&key.verification_key().unwrap()).unwrap();
         let verification_key = key.verification_key().unwrap();
         let mut generation_bytes = [0; 16];
         entropy.try_fill_bytes(&mut generation_bytes).unwrap();

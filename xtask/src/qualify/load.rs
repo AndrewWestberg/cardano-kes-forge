@@ -1,4 +1,6 @@
 //! Physical admission-to-independent-verification load qualification.
+pub mod software;
+
 use super::feasibility::{
     CampaignHeader, CampaignIdentity, PreparedCampaign, decode_hex, public_message, read_records,
     validate_header,

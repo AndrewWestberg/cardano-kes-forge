@@ -512,6 +512,78 @@ fn handshakes_local_scope_and_signed_management_bytes() {
     }
 }
 
+#[test]
+fn expected_target_is_a_local_request_only_paired_fixed_tuple() {
+    fn with_target(encoded: &[u8], target: Vec<u8>) -> Vec<u8> {
+        let value = Value::parse(encoded).unwrap();
+        let mut fields: Vec<_> = value
+            .map()
+            .unwrap()
+            .into_iter()
+            .map(|entry| {
+                let (key, value) = entry.unwrap();
+                (key, value.encoded().to_vec())
+            })
+            .collect();
+        fields.push(("target", target));
+        map(fields)
+    }
+    let native = map(vec![
+        ("version", u(1)),
+        ("connection", t("pool-1")),
+        ("request", b(&[0; 16])),
+        ("budget_ms", u(500)),
+        ("op", t("STATUS")),
+        ("payload", map(vec![])),
+    ]);
+    assert!(Envelope::parse(&native, K::LocalRequest).is_ok());
+    for scope in [
+        vec![b(&[1; 16]), vec![0xf6], vec![0xf6]],
+        vec![b(&[1; 16]), b(&[2; 28]), b(&[3; 16])],
+    ] {
+        let target = array(scope);
+        assert!(Envelope::parse(&with_target(&native, target.clone()), K::LocalRequest).is_ok());
+        let device = request("STATUS", map(vec![]), true);
+        assert!(matches!(
+            Envelope::parse(&with_target(&device, target.clone()), K::DeviceRequest),
+            Err(Error::UnknownField)
+        ));
+        let device_response = response("STATUS", "WRONG_POOL", map(vec![]));
+        assert!(matches!(
+            Envelope::parse(
+                &with_target(&device_response, target.clone()),
+                K::DeviceResponse
+            ),
+            Err(Error::UnknownField)
+        ));
+        let local_response = map(vec![
+            ("version", u(1)),
+            ("connection", t("pool-1")),
+            ("request", b(&[0; 16])),
+            ("op", t("STATUS")),
+            ("status", t("WRONG_POOL")),
+            ("payload", map(vec![])),
+        ]);
+        assert!(matches!(
+            Envelope::parse(&with_target(&local_response, target), K::LocalResponse),
+            Err(Error::UnknownField)
+        ));
+    }
+    for target in [
+        vec![0xf6],
+        array(vec![]),
+        array(vec![b(&[1; 16]), vec![0xf6]]),
+        array(vec![b(&[1; 16]), vec![0xf6], vec![0xf6], vec![0xf6]]),
+        array(vec![b(&[1; 15]), vec![0xf6], vec![0xf6]]),
+        array(vec![b(&[1; 16]), b(&[2; 27]), b(&[3; 16])]),
+        array(vec![b(&[1; 16]), b(&[2; 28]), b(&[3; 15])]),
+        array(vec![b(&[1; 16]), b(&[2; 28]), vec![0xf6]]),
+        array(vec![b(&[1; 16]), vec![0xf6], b(&[3; 16])]),
+    ] {
+        assert!(Envelope::parse(&with_target(&native, target), K::LocalRequest).is_err());
+    }
+}
+
 fn response(op: &str, status: &str, payload: Vec<u8>) -> Vec<u8> {
     map(vec![
         ("version", u(1)),

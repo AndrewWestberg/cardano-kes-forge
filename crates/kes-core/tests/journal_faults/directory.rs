@@ -59,6 +59,7 @@ fn empty() -> DirectorySnapshot {
         retirement: None,
         credential: DeviceCredential::new([0x52; 32]),
         pending_deletion: None,
+        pending_enrollment: None,
         live: [None; 32],
         tombstones: [None; 32],
     }
@@ -70,6 +71,7 @@ fn copy_public(state: &DirectorySnapshot) -> DirectorySnapshot {
         retirement: state.retirement,
         credential: state.credential,
         pending_deletion: state.pending_deletion,
+        pending_enrollment: state.pending_enrollment,
         live: state.live,
         tombstones: state.tombstones,
     }
@@ -86,6 +88,69 @@ fn replay(sequence: u64, revision: Revision, label: u8) -> ManagementReplay {
         payload_digest: [label; 32],
         result: ManagementResult::Committed { revision },
     }
+}
+
+#[test]
+fn prior_directory_tombstone_keeps_unknown_credential_epoch_on_migration() {
+    use kes_core::{
+        cbor::{Encoder, Value},
+        journal::SnapshotCodec,
+    };
+    let mut state = empty();
+    state.revision = Revision::new(1);
+    state.tombstones[0] = Some(PoolTombstone {
+        pool_id: pool_id(0),
+        last_incarnation: IncarnationId::from_bytes([1; 16]),
+        credential_epoch: Some(kes_core::types::CredentialEpoch::new(7)),
+        management_sequence: ManagementSequence::new(2),
+        certificate_high_water: None,
+        generation_high_water: GenerationNumber::new(1),
+        deletion_revision: state.revision,
+        management_replay: replay(2, state.revision, 3),
+    });
+    let mut current = [0; 7536];
+    let len = DirectoryCodec::encode(&state, context(), &mut current).unwrap();
+    let mut old = [0; 7536];
+    let mut encoder = Encoder::new(&mut old);
+    encoder.array(9).unwrap();
+    for (index, value) in Value::parse(&current[..len])
+        .unwrap()
+        .array()
+        .unwrap()
+        .enumerate()
+    {
+        match index {
+            0 => encoder.uint(4).unwrap(),
+            5 => {
+                encoder.array(1).unwrap();
+                encoder.array(7).unwrap();
+                for field in value
+                    .array()
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .array()
+                    .unwrap()
+                    .take(7)
+                {
+                    encoder.value(field).unwrap();
+                }
+            }
+            _ => encoder.value(value).unwrap(),
+        }
+    }
+    let old = encoder.finish().unwrap();
+    let migrated = DirectoryCodec::decode(old.encoded(), context()).unwrap();
+    let tombstone = migrated.tombstones.iter().flatten().next().unwrap();
+    assert_eq!(tombstone.pool_id, pool_id(0));
+    assert_eq!(tombstone.credential_epoch, None);
+    assert_eq!(
+        tombstone.management_replay,
+        state.tombstones[0].unwrap().management_replay
+    );
+    let len = DirectoryCodec::encode(&migrated, context(), &mut current).unwrap();
+    let roundtrip = DirectoryCodec::decode(&current[..len], context()).unwrap();
+    assert_eq!(roundtrip.tombstones[0].unwrap().credential_epoch, None);
 }
 fn commit(
     journal: &Journal<DirectoryCodec>,
@@ -227,6 +292,7 @@ fn directory_history_and_retirement_survive_authenticated_two_sector_storage() {
         next.tombstones[usize::from(index)] = Some(PoolTombstone {
             pool_id: pool_id(index),
             last_incarnation: IncarnationId::from_bytes([index; 16]),
+            credential_epoch: Some(kes_core::types::CredentialEpoch::new(u64::from(index))),
             management_sequence: ManagementSequence::new(2),
             certificate_high_water: Some(CertificateCounter::new(if index == 13 {
                 u64::MAX

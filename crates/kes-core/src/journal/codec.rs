@@ -7,6 +7,12 @@ use crate::types::{ManagementSequence, RequestId, Revision};
 pub struct PoolCodec;
 pub struct DirectoryCodec;
 
+impl PoolCodec {
+    /// Includes the 128-byte authenticated header and 16-byte AEAD tag.
+    pub const MAX_SNAPSHOT_BYTES: usize = 3584;
+    pub const MAX_PLAINTEXT_BYTES: usize = Self::MAX_SNAPSHOT_BYTES - 128 - 16;
+}
+
 pub(crate) fn array(value: Value<'_>, count: usize) -> Result<Array<'_>, JournalError> {
     let values = value.array()?;
     if values.count() != count {

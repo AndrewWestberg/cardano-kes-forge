@@ -4,7 +4,7 @@ use kes_core::{
         StageGenerationRequest,
     },
     certificate::CertificateError,
-    crypto::{Generation, KesKey, PublicTreeBuffer, verify},
+    crypto::{Generation, PublicTreeBuffer, verify},
     rotation::{PeriodObservationOutcome, PeriodObservationRequest},
     signing::SigningRequest,
     state::{GenerationSpec, KESGeneration, Lifecycle, PublicObject, StateError},
@@ -77,13 +77,12 @@ struct Replacement {
 fn replacement(fixture: &mut Fixture, number: u64, tag: u8, counter: u64) -> Replacement {
     let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = Zeroizing::new([tag; 32]);
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let verified = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let generation = GenerationId::from_bytes([tag; 16]);
     let backup = include_bytes!("../../../fuzz/corpus/frame/backup-public-structure");

@@ -140,6 +140,14 @@ impl DeviceIdentityKey {
     pub fn verification_key(&self) -> [u8; 32] {
         self.0.verifying_key().to_bytes()
     }
+    pub(crate) fn create_backup(
+        &self,
+        key: &crate::crypto::KesKey,
+        metadata: crate::backup::Metadata,
+        entropy: &mut impl TryCryptoRng,
+    ) -> Result<crate::backup::BackupArtifact, crate::backup::Error> {
+        crate::backup::create(key, metadata, &self.0, entropy)
+    }
     pub fn sign_info(
         &self,
         response: Map<'_>,
@@ -641,6 +649,10 @@ impl DeviceSession {
     }
     pub const fn is_valid(&self) -> bool {
         self.0.valid
+    }
+    /// Sequence required for the next authenticated response in this session.
+    pub const fn response_sequence(&self) -> u64 {
+        self.0.response_sequence
     }
     pub fn authenticate_request<'a>(
         &mut self,

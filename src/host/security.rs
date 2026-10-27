@@ -18,6 +18,7 @@ pub enum Error {
     PinMismatch,
     Authentication,
     ReleaseDowngrade,
+    InvalidEncoding,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -158,6 +159,76 @@ pub fn validate_transition(previous: Mode, next: Mode) -> Result<(), Error> {
     } else {
         Ok(())
     }
+}
+/// Decode the closed deterministic-CBOR v1 capability carried inside signed INFO.
+/// The independent signature uses `evidence_message`, not the CBOR encoding.
+pub fn decode_online_evidence(bytes: &[u8]) -> Result<OnlineEvidence, Error> {
+    use kes_core::cbor::{Map, Value};
+    fn uint(map: Map<'_>, name: &str) -> Result<u64, Error> {
+        map.required(name)
+            .and_then(|v| v.uint())
+            .map_err(|_| Error::InvalidEncoding)
+    }
+    fn fixed<const N: usize>(map: Map<'_>, name: &str) -> Result<[u8; N], Error> {
+        map.required(name)
+            .and_then(|v| v.bytes())
+            .map_err(|_| Error::InvalidEncoding)?
+            .try_into()
+            .map_err(|_| Error::InvalidEncoding)
+    }
+    fn text(map: Map<'_>, name: &str) -> Result<String, Error> {
+        let value = map
+            .required(name)
+            .and_then(|v| v.text())
+            .map_err(|_| Error::InvalidEncoding)?;
+        if value.is_empty()
+            || value.len() > 128
+            || !value.bytes().all(|b| (0x20..=0x7e).contains(&b))
+        {
+            return Err(Error::InvalidEncoding);
+        }
+        Ok(value.to_owned())
+    }
+    if bytes.len() > 2048 {
+        return Err(Error::InvalidEncoding);
+    }
+    let map = Value::parse(bytes)
+        .and_then(|v| v.map())
+        .map_err(|_| Error::InvalidEncoding)?;
+    // Requiring every named field and exactly this count rejects extras as well
+    // as missing fields; the CBOR parser rejects duplicate/unsorted keys.
+    if map.len() != 13 || uint(map, "version")? != 1 {
+        return Err(Error::InvalidEncoding);
+    }
+    let mode = match map
+        .required("mode")
+        .and_then(|v| v.text())
+        .map_err(|_| Error::InvalidEncoding)?
+    {
+        "development" => Mode::Development,
+        "release-unprovisioned" => Mode::ReleaseUnprovisioned,
+        "release-ready" => Mode::ReleaseReady,
+        _ => return Err(Error::InvalidEncoding),
+    };
+    let flash_capacity_bytes = uint(map, "flash_capacity_bytes")?;
+    if flash_capacity_bytes == 0 {
+        return Err(Error::InvalidEncoding);
+    }
+    Ok(OnlineEvidence {
+        mode,
+        challenge: fixed(map, "challenge")?,
+        boot_nonce: fixed(map, "boot_nonce")?,
+        device: fixed(map, "device")?,
+        silicon_revision: u16::try_from(uint(map, "silicon_revision")?)
+            .map_err(|_| Error::InvalidEncoding)?,
+        rom_revision: text(map, "rom_revision")?,
+        flash_part: text(map, "flash_part")?,
+        flash_capacity_bytes,
+        firmware_digest: fixed(map, "firmware_digest")?,
+        hardware_policy_digest: fixed(map, "hardware_policy_digest")?,
+        security_version: uint(map, "security_version")?,
+        signature: fixed(map, "signature")?,
+    })
 }
 
 pub fn evidence_message(evidence: &OnlineEvidence) -> Vec<u8> {

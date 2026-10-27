@@ -1,5 +1,5 @@
 use crate::host::client::{self, Descriptor, Error as ClientError, PoolStatus};
-use crate::host::config::{Error as ConfigError, PoolConnection};
+use crate::host::config::{Error as ConfigError, PublicPoolConnection};
 use crate::host::operations::{Error as OperationError, Identity, OperationRecord, State};
 use kes_core::cbor::{Encoder, Value};
 use serde::Deserialize;
@@ -112,7 +112,7 @@ struct Outcome {
 }
 
 fn execute(arguments: &Arguments) -> Result<Outcome, Error> {
-    let connection = PoolConnection::load(&arguments.connection).map_err(config_error)?;
+    let connection = PublicPoolConnection::load(&arguments.connection).map_err(config_error)?;
     let record_path = operation_record_path(
         &arguments.connection,
         arguments.command,
@@ -231,7 +231,7 @@ fn record_client_outcome(
 }
 
 fn publish_certificate(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     generation: [u8; 16],
     certificate: &[u8],
 ) -> Result<(), Error> {
@@ -253,7 +253,7 @@ struct Prepared {
 
 fn prepare(
     arguments: &Arguments,
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     status: &PoolStatus,
     expected_revision: u64,
 ) -> Result<Prepared, Error> {
@@ -351,12 +351,12 @@ fn completed_descriptor<'a>(
 }
 
 fn certify_payload(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     generation: [u8; 16],
     certificate: &[u8],
     expected_revision: u64,
 ) -> Result<Vec<u8>, Error> {
-    let certificate = Value::parse(certificate).map_err(|_| Error::Integrity)?;
+    Value::parse(certificate).map_err(|_| Error::Integrity)?;
     encode_payload(|encoder| {
         encoder.map(4)?;
         encoder.text("network")?;
@@ -364,7 +364,7 @@ fn certify_payload(
         encoder.text("generation")?;
         encoder.bytes(&generation)?;
         encoder.text("certificate")?;
-        encoder.value(certificate)?;
+        encoder.bytes(certificate)?;
         encoder.text("expected_revision")?;
         encoder.uint(expected_revision)
     })
@@ -415,7 +415,7 @@ fn encode_payload(
 
 fn encode_network(
     encoder: &mut Encoder<'_>,
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
 ) -> Result<(), kes_core::cbor::Error> {
     let digest = decode_hex::<32>(&connection.network_binding.shelley_genesis_digest)
         .expect("validated connection digest");

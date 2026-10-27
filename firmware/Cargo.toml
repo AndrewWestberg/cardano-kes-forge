@@ -14,6 +14,7 @@ a2-entropy-diagnostic = []
 
 [dependencies]
 kes-core.workspace = true
+ed25519-dalek.workspace = true
 kes-protocol.workspace = true
 hkdf.workspace = true
 rand_chacha.workspace = true
@@ -43,3 +44,8 @@ required-features = ["a2-development"]
 name = "kes-a2-entropy-diagnostic"
 path = "src/bin/a2-entropy-diagnostic.rs"
 required-features = ["a2-entropy-diagnostic"]
+
+[[bin]]
+name = "kes-a2-identity-initialize"
+path = "src/bin/a2-identity-initialize.rs"
+required-features = ["a2-development"]

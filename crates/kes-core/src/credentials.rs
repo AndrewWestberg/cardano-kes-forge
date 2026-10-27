@@ -41,6 +41,7 @@ pub enum Error {
     InvalidEpoch,
     StaleGeneration,
     MissingGenerationWorkspace,
+    PendingOperation,
 }
 
 pub fn change_pool_credential(
@@ -101,6 +102,9 @@ pub fn change_device_credential(
     directory: &mut DirectorySnapshot,
     envelope: &VerifiedEnvelope<'_>,
 ) -> Result<CredentialOutcome, Error> {
+    if directory.pending_enrollment.is_some() {
+        return Err(Error::PendingOperation);
+    }
     let fields = envelope.fields();
     if !matches!(
         fields.action,

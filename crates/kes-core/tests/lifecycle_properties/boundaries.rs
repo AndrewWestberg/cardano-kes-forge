@@ -18,6 +18,7 @@ fn empty_snapshot(revision: u64) -> DirectorySnapshot {
         retirement: None,
         credential: DeviceCredential::new([0x52; 32]),
         pending_deletion: None,
+        pending_enrollment: None,
         live: [None; 32],
         tombstones: [None; 32],
     }
@@ -82,11 +83,11 @@ fn fill_tree(key: &mut KesKey, tree: &mut PublicTreeBuffer) {
         .unwrap()
         .read_exact(&mut *seed)
         .unwrap();
-    let mut job = Generation::begin(&mut seed, key, tree).unwrap();
+    let mut job = Generation::begin(&mut seed, key.lifetime()).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    job.finish().unwrap();
+    (*key, *tree) = job.finish().unwrap();
 }
 #[test]
 fn public_object_requires_exact_authenticated_reference_and_consistent_tree() {

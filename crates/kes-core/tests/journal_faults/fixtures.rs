@@ -2,7 +2,7 @@ use super::flash::NorFlash;
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::{
     cbor::Encoder,
-    crypto::{Generation, KesKey, PublicTreeBuffer},
+    crypto::Generation,
     journal::{Journal, JournalContext, JournalLayout, JournalScope, PoolCodec, SnapshotCodec},
     state::{PoolRegistration, PublicObject},
     types::{
@@ -87,13 +87,12 @@ impl Fixture {
                 incarnation,
             },
         };
-        let mut key = KesKey::erased(KesLifetime::new(64).unwrap());
-        let mut tree = PublicTreeBuffer::new();
-        let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+        let mut job = Generation::begin(&mut seed, KesLifetime::new(64).unwrap()).unwrap();
         for _ in 0..64 {
             job.step().unwrap();
         }
-        let verified = job.finish().unwrap();
+        let (mut key, tree) = job.finish().unwrap();
+        let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
         let vk = key.verification_key().unwrap();
         // Public structural backup envelope, not a claim of HPKE producer validation.
         let backup = include_bytes!("../../../../fuzz/corpus/frame/backup-public-structure");
@@ -126,7 +125,7 @@ impl Fixture {
                 .unwrap();
             let mut body = Zeroizing::new(vec![0; 3440]);
             let mut e = Encoder::new(&mut body);
-            e.array(13).unwrap();
+            e.array(14).unwrap();
             e.uint(1).unwrap();
             e.bytes(pool.as_bytes()).unwrap();
             e.bytes(incarnation.as_bytes()).unwrap();
@@ -176,6 +175,7 @@ impl Fixture {
             e.bytes(&recipient_id).unwrap();
             e.bytes(certificate).unwrap();
             e.uint(0).unwrap();
+            e.null().unwrap();
             e.null().unwrap();
             let len = e.finish().unwrap().encoded().len();
             body.truncate(len);

@@ -66,7 +66,12 @@ impl Drop for EchoGuard {
     }
 }
 
+fn protect_secret_process() -> Result<(), Error> {
+    crate::host::memory::protect_secret_process().map_err(|_| Error::MemoryProtection)
+}
+
 pub fn prompt_new_passphrase() -> Result<Zeroizing<Vec<u8>>, Error> {
+    protect_secret_process()?;
     let mut terminal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -111,6 +116,7 @@ pub fn prompt_new_passphrase() -> Result<Zeroizing<Vec<u8>>, Error> {
 }
 
 pub fn prompt_existing_passphrase() -> Result<Zeroizing<Vec<u8>>, Error> {
+    protect_secret_process()?;
     let mut terminal = OpenOptions::new()
         .read(true)
         .write(true)
@@ -200,6 +206,10 @@ impl RecipientKeyFile {
         &self.encoded
     }
 
+    pub fn into_encoded(self) -> Vec<u8> {
+        self.encoded
+    }
+
     pub fn public(&self) -> Result<RecipientPublic, Error> {
         let fields = parse_fields(&self.encoded)?;
         Ok(RecipientPublic {
@@ -272,6 +282,7 @@ pub fn create(
     entropy: &mut impl Entropy,
 ) -> Result<(RecipientPublic, RecipientKeyFile), Error> {
     validate_passphrase(passphrase)?;
+    protect_secret_process()?;
     with_locked_private(|private| {
         entropy.fill(&mut private[..])?;
         let secret = StaticSecret::from(*private);
@@ -514,12 +525,20 @@ fn require_keys(map: Map<'_>) -> Result<(), Error> {
 }
 
 fn derive_key(passphrase: &[u8], salt: &[u8; 16]) -> Result<Zeroizing<[u8; 32]>, Error> {
+    protect_secret_process()?;
     let params = Params::new(MEMORY_KIB, ITERATIONS, PARALLELISM, Some(32))
         .map_err(|_| Error::UnsupportedParameters)?;
+    let blocks = params.block_count();
     let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
     let mut key = Zeroizing::new([0; 32]);
+    let mut memory = Vec::new();
+    memory
+        .try_reserve_exact(blocks)
+        .map_err(|_| Error::MemoryProtection)?;
+    memory.resize(blocks, argon2::Block::default());
+    let mut memory = Zeroizing::new(memory);
     argon
-        .hash_password_into(passphrase, salt, &mut key[..])
+        .hash_password_into_with_memory(passphrase, salt, &mut key[..], &mut memory[..])
         .map_err(|_| Error::Authentication)?;
     Ok(key)
 }

@@ -1,14 +1,49 @@
 #![no_main]
 use kes_core::cbor::{Encoder, Value};
 use libfuzzer_sys::fuzz_target;
+use std::sync::{
+    Once,
+    atomic::{AtomicU64, Ordering},
+};
+
+static CHECKS: AtomicU64 = AtomicU64::new(0);
+static VIOLATIONS: AtomicU64 = AtomicU64::new(0);
+static INIT: Once = Once::new();
+
+extern "C" fn summary() {
+    println!(
+        "KES_FUZZ_SUMMARY {{\"version\":1,\"semantic_checks\":{},\"violations\":{}}}",
+        CHECKS.load(Ordering::Relaxed),
+        VIOLATIONS.load(Ordering::Relaxed)
+    );
+}
+
+fn initialize() {
+    INIT.call_once(|| {
+        // The no-argument callback has no borrowed state and cannot unwind.
+        if unsafe { libc::atexit(summary) } != 0 {
+            std::process::exit(2);
+        }
+    });
+}
 
 fn check(value: bool) {
+    CHECKS.fetch_add(1, Ordering::Relaxed);
     if !value {
-        std::process::abort();
+        VIOLATIONS.fetch_add(1, Ordering::Relaxed);
+        std::process::exit(1);
     }
 }
 
 fuzz_target!(|data: &[u8]| {
+    initialize();
+    if data.len() > kes_protocol::MAX_BACKUP_BYTES {
+        check(matches!(
+            kes_protocol::backup::BackupArtifact::parse(data),
+            Err(kes_protocol::Error::Oversize)
+        ));
+        return;
+    }
     let Ok(artifact) = kes_protocol::backup::BackupArtifact::parse(data) else {
         return;
     };
@@ -27,8 +62,10 @@ fuzz_target!(|data: &[u8]| {
     encoder.value(Value::parse(&data[8..]).unwrap()).unwrap();
     let canonical = encoder.finish().unwrap();
     check(canonical.encoded() == &data[8..]);
-    check(kes_protocol::backup::BackupArtifact::parse(data)
-        .unwrap()
-        .encoded()
-        == data);
+    check(
+        kes_protocol::backup::BackupArtifact::parse(data)
+            .unwrap()
+            .encoded()
+            == data,
+    );
 });

@@ -284,45 +284,37 @@ pub struct GenerationProgress {
     pub completed_leaves: u8,
 }
 
-/// Bounded workspace for the device's one global generation job; the owner
-/// schedules it. Each step derives exactly one leaf VK.
-/// Unfinished drop/cancellation wipes seed workspace and unpublished state.
-/// The caller owns output buffers, so completion transfers no 608/4064-byte
-/// intermediate value. Input entropy must be fresh, healthy and zeroizing.
-pub struct Generation<'state, 'tree> {
-    output: &'state mut SigningState,
-    tree: Option<&'tree mut PublicTreeBuffer>,
+/// Bounded, movable workspace for the device's one global generation job.
+/// Each step derives exactly one leaf VK. Owned secret state and the complete
+/// seed stack are zeroized on cancellation, failed completion, or drop.
+/// Completion moves the actual period-zero state and validated public tree;
+/// neither output needs a clone, allocation, or self-referential borrow.
+pub struct Generation {
+    output: SigningState,
+    tree: PublicTreeBuffer,
     seeds: Zeroizing<[[u8; 32]; DEPTH + 1]>,
     nodes: [u8; DEPTH + 1],
     depths: [u8; DEPTH + 1],
     stack: usize,
     leaves: u8,
-    finished: bool,
 }
-impl<'state, 'tree> Generation<'state, 'tree> {
-    pub fn begin(
-        seed: &mut [u8; 32],
-        output: &'state mut SigningState,
-        tree: &'tree mut PublicTreeBuffer,
-    ) -> Result<Self, Error> {
-        if output.is_live() {
-            return Err(Error::OutputInUse);
-        }
-        output.erase();
-        tree.0.fill(0);
+impl Generation {
+    pub fn begin(seed: &mut [u8; 32]) -> Result<Self, Error> {
         let mut seeds = Zeroizing::new([[0; 32]; DEPTH + 1]);
         seeds[0].copy_from_slice(seed);
         seed.zeroize();
         Ok(Self {
-            output,
-            tree: Some(tree),
+            output: SigningState::erased(),
+            tree: PublicTreeBuffer::new(),
             seeds,
             nodes: [0; DEPTH + 1],
             depths: [DEPTH as u8; DEPTH + 1],
             stack: 1,
             leaves: 0,
-            finished: false,
         })
+    }
+    pub const fn completed_leaves(&self) -> u8 {
+        self.leaves
     }
     pub fn step(&mut self) -> Result<GenerationProgress, Error> {
         if self.leaves == PERIODS {
@@ -348,10 +340,7 @@ impl<'state, 'tree> Generation<'state, 'tree> {
                 self.output.canonical[..32].copy_from_slice(&*seed);
             }
             let key = SigningKey::from_bytes(&seed);
-            let tree = self
-                .tree
-                .as_deref_mut()
-                .expect("generation owns public output");
+            let tree = &mut self.tree;
             tree.set(node, key.verifying_key().as_bytes());
             let mut completed = node;
             while completed != 0 && completed % 2 == 0 {
@@ -372,29 +361,20 @@ impl<'state, 'tree> Generation<'state, 'tree> {
         self.depths[self.stack] = depth as u8;
         self.stack += 1;
     }
-    pub fn finish(mut self) -> Result<VerifiedPublicTree<'tree>, Error> {
+    pub fn finish(mut self) -> Result<(SigningState, PublicTreeBuffer), Error> {
         if self.leaves != PERIODS {
             return Err(Error::GenerationIncomplete);
         }
-        let tree = self.tree.take().expect("generation owns public output");
         for depth in 1..=DEPTH {
             let offset = state_offset(depth);
             let node = node_for(0, depth);
             self.output.canonical[offset + 32..offset + 64]
-                .copy_from_slice(tree.node(2 * node + 1));
+                .copy_from_slice(self.tree.node(2 * node + 1));
             self.output.canonical[offset + 64..offset + 96]
-                .copy_from_slice(tree.node(2 * node + 2));
+                .copy_from_slice(self.tree.node(2 * node + 2));
         }
         self.output.period = Some(0);
-        self.finished = true;
-        Ok(VerifiedPublicTree { tree })
-    }
-}
-impl Drop for Generation<'_, '_> {
-    fn drop(&mut self) {
-        if !self.finished {
-            self.output.erase();
-        }
-        // Zeroizing owns the entire seed stack, including unused frames.
+        self.tree.verify(&self.output.verification_key()?)?;
+        Ok((self.output, self.tree))
     }
 }

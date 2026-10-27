@@ -155,6 +155,17 @@ fn exact_authority_and_machine_schemas_keep_roles_scopes_and_keypairs_separate()
         bootstrap::machine_public(&transport, bootstrap::MachineScope::Pool),
         Err(bootstrap::Error::WrongScope)
     );
+    for required in ["poolId", "incarnationId"] {
+        let mut missing: serde_json::Value = serde_json::from_slice(&transport).unwrap();
+        missing.as_object_mut().unwrap().remove(required);
+        assert_eq!(
+            bootstrap::machine_public(
+                &serde_json::to_vec(&missing).unwrap(),
+                bootstrap::MachineScope::Management,
+            ),
+            Err(bootstrap::Error::InvalidSchema)
+        );
+    }
     let extra = String::from_utf8(management_public)
         .unwrap()
         .replace("\"version\":1", "\"version\":1,\"unexpected\":true");
@@ -398,7 +409,6 @@ fn provisioning_manifest_requires_exact_a4_inputs_distinct_authorities_and_conse
         ],
         "signature": null
     });
-    manifest_value["signature"] = json!(base64(&[0; 64]));
     let unsigned_signature_bytes = serde_json::to_vec(&manifest_value).unwrap();
     let manifest_signature = reviewer
         .sign(&provisioning::manifest_signature_message(&unsigned_signature_bytes).unwrap())
@@ -465,6 +475,32 @@ fn provisioning_manifest_requires_exact_a4_inputs_distinct_authorities_and_conse
     assert!(
         provisioning::verify_release_readiness(&identity, &bytes, &record_bytes, &reviewer_bytes,)
             .is_ok()
+    );
+    assert_eq!(
+        provisioning::verify_release_readiness(
+            &identity,
+            &unsigned_signature_bytes,
+            &record_bytes,
+            &reviewer_bytes,
+        ),
+        Err(provisioning::Error::Unsigned)
+    );
+
+    let mut initial_security_version = manifest_value.clone();
+    initial_security_version["securityVersion"] = json!(0);
+    assert!(
+        provisioning::parse_manifest(&serde_json::to_vec(&initial_security_version).unwrap())
+            .is_ok()
+    );
+
+    let mut missing_signature = manifest_value.clone();
+    missing_signature
+        .as_object_mut()
+        .unwrap()
+        .remove("signature");
+    assert_eq!(
+        provisioning::parse_manifest(&serde_json::to_vec(&missing_signature).unwrap()),
+        Err(provisioning::Error::InvalidSchema)
     );
 
     let mut a2 = manifest_value.clone();

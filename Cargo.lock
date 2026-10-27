@@ -1142,6 +1142,7 @@ name = "kes-firmware"
 version = "0.1.0"
 dependencies = [
  "cortex-m-rt",
+ "ed25519-dalek",
  "embassy-futures",
  "embassy-rp",
  "embassy-sync",
@@ -1164,6 +1165,7 @@ dependencies = [
  "kes-core",
  "rand_chacha",
  "sha2",
+ "xtask",
  "zeroize",
 ]
 
@@ -2229,6 +2231,9 @@ dependencies = [
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek",
+ "kes-core",
+ "kes-protocol",
  "rustix",
  "serde",
  "serde_json",

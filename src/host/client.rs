@@ -1,7 +1,12 @@
 #[path = "client_helpers.rs"]
 mod helpers;
 
-use crate::host::config::{DeviceConfig, MachineCredential, PoolConnection};
+#[path = "operator_status.rs"]
+pub mod operator_status;
+
+use crate::host::config::{
+    DeviceConfig, DeviceConnection, MachineCredential, PoolConnection, PublicPoolConnection,
+};
 use helpers::*;
 use kes_core::cbor::{Encoder, Map, Value};
 use kes_core::session::{
@@ -17,7 +22,10 @@ use std::time::Duration;
 use zeroize::Zeroizing;
 
 const A2_DEVELOPMENT_CAPABILITY: &[u8] = b"rp2350-a2;development;otp=untouched;\
-    persistence=none;firmware-digest=unmeasured;entropy=health-checked-a2-exploratory;\
+    persistence=identity-only;firmware-digest=unmeasured;entropy=health-checked-a2-exploratory;\
+    session-entropy=fresh-per-open";
+const A2_ENROLLMENT_CAPABILITY: &[u8] = b"rp2350-a2;development;otp=untouched;\
+    persistence=identity-and-enrollment;firmware-digest=unmeasured;entropy=health-checked-a2-exploratory;\
     session-entropy=fresh-per-open";
 const A2_DEVELOPMENT_POLICY_DIGEST: [u8; 32] = [
     0xa6, 0x22, 0x83, 0xc6, 0xd4, 0x21, 0x01, 0x29, 0xcf, 0x6f, 0x26, 0x8f, 0x61, 0x15, 0x0a, 0x23,
@@ -70,6 +78,7 @@ pub struct AuthenticatedClient {
     incarnation: Option<[u8; 16]>,
     session: HostSession,
     boot_nonce: [u8; 32],
+    security_mode: &'static str,
     request_sequence: u64,
     valid: bool,
 }
@@ -83,8 +92,10 @@ struct SessionBinding<'a> {
     hpke_public_key: [u8; 32],
     firmware_digest: [u8; 32],
     hardware_policy_digest: [u8; 32],
+    security_policy: &'a str,
     security_version: u64,
     credential: &'a MachineCredential,
+    identity: &'a crate::host::config::DeviceIdentity,
 }
 
 impl AuthenticatedClient {
@@ -105,8 +116,10 @@ impl AuthenticatedClient {
                 hpke_public_key: identity.hpke_public_key,
                 firmware_digest: identity.firmware_digest,
                 hardware_policy_digest: identity.hardware_policy_digest,
+                security_policy: &connection.security_policy,
                 security_version: identity.security_version,
                 credential: &connection.credential,
+                identity: &identity,
             },
         )
     }
@@ -126,8 +139,10 @@ impl AuthenticatedClient {
                 hpke_public_key: connection.identity.hpke_public_key,
                 firmware_digest: connection.identity.firmware_digest,
                 hardware_policy_digest: connection.identity.hardware_policy_digest,
+                security_policy: &connection.security_policy,
                 security_version: connection.identity.security_version,
                 credential: &connection.credential,
+                identity: &connection.identity,
             },
         )
     }
@@ -164,6 +179,25 @@ impl AuthenticatedClient {
         if view.hpke_public_key != binding.hpke_public_key {
             return Err(Error::Security);
         }
+        let security_mode = match (
+            binding.security_policy,
+            info.payload()
+                .required("security_mode")
+                .and_then(|value| value.text())
+                .map_err(|_| Error::Integrity)?,
+        ) {
+            ("release-required" | "isolated-development", "release-ready") => {
+                verify_release_info(info.payload(), &binding, challenge, view.boot_nonce)?;
+                "release-ready"
+            }
+            ("isolated-development", "development") => "development",
+            ("release-required" | "isolated-development", "release-unprovisioned")
+                if binding.pool.is_none() =>
+            {
+                "release-unprovisioned"
+            }
+            _ => return Err(Error::Security),
+        };
         validate_info_identity(info.payload(), &binding)?;
         let open_counter = open_counter(info.payload(), binding.pool, binding.incarnation)?;
         let mut open_request = [0; 16];
@@ -214,6 +248,7 @@ impl AuthenticatedClient {
             incarnation: binding.incarnation,
             session,
             boot_nonce: view.boot_nonce,
+            security_mode,
             request_sequence: 0,
             valid: true,
         })
@@ -230,6 +265,111 @@ impl AuthenticatedClient {
     pub fn invalidate(&mut self) {
         self.valid = false;
     }
+    /// Direct, development-only extraction. The caller must lock `response`
+    /// before calling; the secret-bearing response is never copied to a local
+    /// socket frame or an unprotected intermediate buffer here.
+    #[cfg(feature = "development")]
+    pub fn exchange_development(
+        &mut self,
+        wire: &mut impl DeviceWire,
+        request: [u8; 16],
+        generation: [u8; 16],
+        response: &mut [u8; kes_protocol::MAX_FRAME_BYTES],
+        timeout: Duration,
+    ) -> Result<usize, Error> {
+        if !self.valid
+            || self.security_mode != "development"
+            || self.pool.is_none()
+            || self.incarnation.is_none()
+            || timeout.is_zero()
+        {
+            return Err(Error::Security);
+        }
+        let mut payload_bytes = [0; 64];
+        let mut encoder = Encoder::new(&mut payload_bytes);
+        encoder.map(2).map_err(|_| Error::Integrity)?;
+        encoder.text("generation").map_err(|_| Error::Integrity)?;
+        encoder.bytes(&generation).map_err(|_| Error::Integrity)?;
+        encoder
+            .text("protected_output")
+            .map_err(|_| Error::Integrity)?;
+        encoder.boolean(true).map_err(|_| Error::Integrity)?;
+        let payload = encoder
+            .finish()
+            .map_err(|_| Error::Integrity)?
+            .map()
+            .map_err(|_| Error::Integrity)?;
+        let sequence = self.request_sequence;
+        let mut bytes = [0; kes_protocol::MAX_FRAME_BYTES];
+        let budget = kes_protocol::STATUS_BUDGET_MS
+            .min(u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX));
+        if budget == 0 {
+            return Err(Error::Unavailable);
+        }
+        let unsigned_length = encode_device_request(
+            &mut bytes,
+            self.device,
+            self.pool,
+            self.incarnation,
+            self.session.session_id(),
+            sequence,
+            &request,
+            budget,
+            Operation::DevInspect,
+            payload,
+            &[0; 32],
+        )?;
+        let unsigned = Envelope::parse(&bytes[..unsigned_length], EnvelopeKind::DeviceRequest)
+            .map_err(|_| Error::Integrity)?;
+        let mac = self.session.request_mac(unsigned.map()).map_err(|_| {
+            self.valid = false;
+            Error::Security
+        })?;
+        self.request_sequence = self.request_sequence.checked_add(1).ok_or_else(|| {
+            self.valid = false;
+            Error::Security
+        })?;
+        let length = encode_device_request(
+            &mut bytes,
+            self.device,
+            self.pool,
+            self.incarnation,
+            self.session.session_id(),
+            sequence,
+            &request,
+            budget,
+            Operation::DevInspect,
+            payload,
+            &mac,
+        )
+        .map_err(|error| {
+            self.valid = false;
+            error
+        })?;
+        let length = wire
+            .exchange(&bytes[..length], response, timeout)
+            .map_err(|error| {
+                self.valid = false;
+                error
+            })?;
+        let reply =
+            Envelope::parse(&response[..length], EnvelopeKind::DeviceResponse).map_err(|_| {
+                self.valid = false;
+                Error::Integrity
+            })?;
+        self.session
+            .authenticate_response(
+                reply.map(),
+                RequestId::from_bytes(request),
+                Operation::DevInspect.as_str(),
+                sequence,
+            )
+            .map_err(|_| {
+                self.valid = false;
+                Error::Security
+            })?;
+        Ok(length)
+    }
 
     /// Authenticates one local request, sends one device request, authenticates
     /// its bound response, and replaces the frame with a local response.
@@ -245,6 +385,9 @@ impl AuthenticatedClient {
         }
         let local = Envelope::parse(local_request, EnvelopeKind::LocalRequest)
             .map_err(|_| Error::Integrity)?;
+        if self.security_mode == "release-unprovisioned" && local.operation != Operation::Status {
+            return Err(Error::Security);
+        }
         let connection = local
             .map()
             .required("connection")
@@ -326,6 +469,18 @@ impl AuthenticatedClient {
                 self.valid = false;
                 Error::Security
             })?;
+        if response.operation == Operation::Status
+            && response.status == Some(Status::Ok)
+            && response
+                .payload()
+                .required("security_mode")
+                .and_then(|value| value.text())
+                .map_err(|_| Error::Integrity)?
+                != self.security_mode
+        {
+            self.valid = false;
+            return Err(Error::Security);
+        }
         encode_local_response(
             local_response,
             &self.connection,
@@ -341,6 +496,17 @@ impl AuthenticatedClient {
     /// development-only method and is never used by production configuration.
     pub fn open_a2_development(
         wire: &mut impl DeviceWire,
+    ) -> Result<(Self, DevelopmentIdentity), Error> {
+        let machine = ed25519_dalek::SigningKey::from_bytes(&A2_QUALIFICATION_MACHINE_SEED);
+        Self::open_a2_development_with_credential(wire, &machine, CredentialEpoch::new(0))
+    }
+
+    /// Self-pin only disposable A2 hardware with the caller's rotated
+    /// management credential. Never use this path for release trust.
+    pub fn open_a2_development_with_credential(
+        wire: &mut impl DeviceWire,
+        machine: &ed25519_dalek::SigningKey,
+        epoch: CredentialEpoch,
     ) -> Result<(Self, DevelopmentIdentity), Error> {
         let mut entropy = File::open("/dev/urandom").map_err(|_| Error::Unavailable)?;
         let mut challenge = [0; 32];
@@ -406,7 +572,7 @@ impl AuthenticatedClient {
         if mode != "development"
             || firmware_digest != [0; 32]
             || policy_digest != A2_DEVELOPMENT_POLICY_DIGEST
-            || capability != A2_DEVELOPMENT_CAPABILITY
+            || (capability != A2_DEVELOPMENT_CAPABILITY && capability != A2_ENROLLMENT_CAPABILITY)
             || security_version != 0
         {
             return Err(Error::Security);
@@ -422,13 +588,12 @@ impl AuthenticatedClient {
             device,
             view.boot_nonce,
             Scope::Management,
-            CredentialEpoch::new(0),
+            epoch,
             counter,
             RequestId::from_bytes(open_request),
         );
-        let machine = ed25519_dalek::SigningKey::from_bytes(&A2_QUALIFICATION_MACHINE_SEED);
         let mut rng = ChaCha20Rng::from_seed(*seed);
-        let (open, pending) = begin_open(context, &view.hpke_public_key, &machine, &mut rng)
+        let (open, pending) = begin_open(context, &view.hpke_public_key, machine, &mut rng)
             .map_err(|_| Error::Security)?;
         let encoded_open = encode_open_request(&open)?;
         let length = wire.exchange(
@@ -455,6 +620,7 @@ impl AuthenticatedClient {
                 incarnation: None,
                 session,
                 boot_nonce: view.boot_nonce,
+                security_mode: "development",
                 request_sequence: 0,
                 valid: true,
             },
@@ -497,17 +663,25 @@ pub struct PoolStatus {
     pub staged: Option<Descriptor>,
 }
 
-pub fn pool_status(connection: &PoolConnection, request: [u8; 16]) -> Result<PoolStatus, Error> {
+pub fn pool_status(
+    connection: &PublicPoolConnection,
+    request: [u8; 16],
+) -> Result<PoolStatus, Error> {
     let mut response = [0; kes_protocol::MAX_FRAME_BYTES];
     let length = exchange(
-        connection,
+        LocalConnection::Pool(connection),
         request,
         Operation::Status,
         kes_protocol::STATUS_BUDGET_MS,
         |encoder| encoder.map(0),
         &mut response,
     )?;
-    let envelope = parse_response(connection, request, Operation::Status, &response[..length])?;
+    let envelope = parse_response(
+        &connection.connection_name,
+        request,
+        Operation::Status,
+        &response[..length],
+    )?;
     require_ok(envelope.status.ok_or(Error::Integrity)?)?;
     let payload = envelope.payload();
     Ok(PoolStatus {
@@ -518,13 +692,13 @@ pub fn pool_status(connection: &PoolConnection, request: [u8; 16]) -> Result<Poo
 }
 
 pub fn certify(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation: [u8; 16],
     canonical_certificate: &[u8],
     expected_revision: u64,
 ) -> Result<Descriptor, Error> {
-    let certificate = Value::parse(canonical_certificate).map_err(|_| Error::Integrity)?;
+    Value::parse(canonical_certificate).map_err(|_| Error::Integrity)?;
     rotation_exchange(connection, request, Operation::Certify, |encoder| {
         encoder.map(4)?;
         encoder.text("network")?;
@@ -532,14 +706,14 @@ pub fn certify(
         encoder.text("generation")?;
         encoder.bytes(&generation)?;
         encoder.text("certificate")?;
-        encoder.value(certificate)?;
+        encoder.bytes(canonical_certificate)?;
         encoder.text("expected_revision")?;
         encoder.uint(expected_revision)
     })
 }
 
 pub fn activate(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation: [u8; 16],
     certificate_digest: [u8; 32],
@@ -563,7 +737,7 @@ pub fn activate(
 }
 
 pub fn schedule(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation: [u8; 16],
     certificate_digest: [u8; 32],
@@ -587,20 +761,21 @@ pub fn schedule(
 }
 
 pub fn generate(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation_number: u64,
+    expected_revision: u64,
 ) -> Result<GenerationResult, Error> {
     let mut response = [0; kes_protocol::MAX_FRAME_BYTES];
     let initial = exchange(
-        connection,
+        LocalConnection::Pool(connection),
         request,
         Operation::Generate,
         kes_protocol::GENERATION_BUDGET_MS,
         |encoder| {
             encoder.map(2)?;
             encoder.text("expected_revision")?;
-            encoder.uint(0)?;
+            encoder.uint(expected_revision)?;
             encoder.text("next_generation_number")?;
             encoder.uint(generation_number)
         },
@@ -609,7 +784,7 @@ pub fn generate(
     match initial {
         Ok(length) => {
             let envelope = parse_response(
-                connection,
+                &connection.connection_name,
                 request,
                 Operation::Generate,
                 &response[..length],
@@ -637,13 +812,13 @@ pub fn generate(
 }
 
 pub fn generation_status(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation_number: u64,
 ) -> Result<GenerationResult, Error> {
     let mut response = [0; kes_protocol::MAX_FRAME_BYTES];
     let length = exchange(
-        connection,
+        LocalConnection::Pool(connection),
         request,
         Operation::OpStatus,
         kes_protocol::STATUS_BUDGET_MS,
@@ -666,13 +841,13 @@ pub fn generation_status(
 }
 
 pub fn get_backup(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation: [u8; 16],
 ) -> Result<BackupResult, Error> {
     let mut response = [0; kes_protocol::MAX_FRAME_BYTES];
     let length = exchange(
-        connection,
+        LocalConnection::Pool(connection),
         request,
         Operation::GetBackup,
         kes_protocol::GENERATION_BUDGET_MS,
@@ -684,7 +859,7 @@ pub fn get_backup(
         &mut response,
     )?;
     let envelope = parse_response(
-        connection,
+        &connection.connection_name,
         request,
         Operation::GetBackup,
         &response[..length],
@@ -709,21 +884,26 @@ pub fn get_backup(
 }
 
 fn rotation_exchange(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     operation: Operation,
     payload: impl FnOnce(&mut Encoder<'_>) -> Result<(), kes_core::cbor::Error>,
 ) -> Result<Descriptor, Error> {
     let mut response = [0; kes_protocol::MAX_FRAME_BYTES];
     let length = exchange(
-        connection,
+        LocalConnection::Pool(connection),
         request,
         operation,
         kes_protocol::STATUS_BUDGET_MS,
         payload,
         &mut response,
     )?;
-    let envelope = parse_response(connection, request, operation, &response[..length])?;
+    let envelope = parse_response(
+        &connection.connection_name,
+        request,
+        operation,
+        &response[..length],
+    )?;
     require_ok(envelope.status.ok_or(Error::Integrity)?)?;
     parse_descriptor(envelope.payload())
 }
@@ -803,7 +983,7 @@ fn encode_optional_bytes(
 
 fn encode_network(
     encoder: &mut Encoder<'_>,
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
 ) -> Result<(), kes_core::cbor::Error> {
     let network = &connection.network_binding;
     let digest = decode_hex_32(&network.shelley_genesis_digest)
@@ -839,13 +1019,13 @@ fn hex_nibble(value: u8) -> Option<u8> {
 }
 
 fn parse_generation_response(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     generation_number: u64,
     operation: Operation,
     response: &[u8],
 ) -> Result<GenerationResult, Error> {
-    let envelope = parse_response(connection, request, operation, response)?;
+    let envelope = parse_response(&connection.connection_name, request, operation, response)?;
     parse_generation_envelope(envelope, request, generation_number)
 }
 
@@ -870,21 +1050,68 @@ fn parse_generation_envelope(
     Ok(result)
 }
 
+/// Send a public management request through the configured local daemon. The
+/// daemon owns transport credentials; this API never accepts offline authority.
+/// Preserve typed response statuses so the caller can reconcile uncertain work.
+pub fn management_exchange(
+    config: &DeviceConnection,
+    request: [u8; 16],
+    operation: Operation,
+    canonical_payload: &[u8],
+) -> Result<Vec<u8>, Error> {
+    if !matches!(
+        operation,
+        Operation::Status | Operation::Manage | Operation::OpStatus
+    ) {
+        return Err(Error::Security);
+    }
+    let payload = Value::parse(canonical_payload).map_err(|_| Error::Integrity)?;
+    payload.map().map_err(|_| Error::Integrity)?;
+    let mut response = vec![0; kes_protocol::MAX_FRAME_BYTES];
+    let length = exchange(
+        LocalConnection::Device(config),
+        request,
+        operation,
+        kes_protocol::STATUS_BUDGET_MS,
+        |encoder| encoder.value(payload),
+        &mut response,
+    )?;
+    parse_response(
+        &config.connection_name,
+        request,
+        operation,
+        &response[..length],
+    )?;
+    response.truncate(length);
+    Ok(response)
+}
+
+enum LocalConnection<'a> {
+    Device(&'a DeviceConnection),
+    Pool(&'a PublicPoolConnection),
+}
+
 fn exchange(
-    connection: &PoolConnection,
+    connection: LocalConnection<'_>,
     request: [u8; 16],
     operation: Operation,
     budget_ms: u32,
     payload: impl FnOnce(&mut Encoder<'_>) -> Result<(), kes_core::cbor::Error>,
-    response: &mut [u8; kes_protocol::MAX_FRAME_BYTES],
+    response: &mut [u8],
 ) -> Result<usize, Error> {
+    let (socket_path, connection_name) = match connection {
+        LocalConnection::Device(device) => (&device.socket_path, &device.connection_name),
+        LocalConnection::Pool(pool) => (&pool.socket_path, &pool.connection_name),
+    };
     let mut body = [0; kes_protocol::MAX_FRAME_BYTES];
     let mut encoder = Encoder::new(&mut body);
-    encoder.map(6).map_err(|_| Error::Integrity)?;
+    encoder.map(7).map_err(|_| Error::Integrity)?;
     encoder.text("op").map_err(|_| Error::Integrity)?;
     encoder
         .text(operation.as_str())
         .map_err(|_| Error::Integrity)?;
+    encoder.text("target").map_err(|_| Error::Integrity)?;
+    encode_local_target(&mut encoder, &connection).map_err(|_| Error::Integrity)?;
     encoder.text("payload").map_err(|_| Error::Integrity)?;
     payload(&mut encoder).map_err(|_| Error::Integrity)?;
     encoder.text("request").map_err(|_| Error::Integrity)?;
@@ -897,12 +1124,12 @@ fn exchange(
         .map_err(|_| Error::Integrity)?;
     encoder.text("connection").map_err(|_| Error::Integrity)?;
     encoder
-        .text(&connection.connection_name)
+        .text(connection_name)
         .map_err(|_| Error::Integrity)?;
     let encoded = encoder.finish().map_err(|_| Error::Integrity)?.encoded();
+    Envelope::parse(encoded, EnvelopeKind::LocalRequest).map_err(|_| Error::Integrity)?;
 
-    let mut stream =
-        UnixStream::connect(&connection.socket_path).map_err(|_| Error::Unavailable)?;
+    let mut stream = UnixStream::connect(socket_path).map_err(|_| Error::Unavailable)?;
     let timeout = Duration::from_millis(u64::from(budget_ms));
     stream
         .set_read_timeout(Some(timeout))
@@ -929,7 +1156,7 @@ fn exchange(
 }
 
 fn parse_response<'a>(
-    connection: &PoolConnection,
+    connection_name: &str,
     request: [u8; 16],
     operation: Operation,
     response: &'a [u8],
@@ -947,7 +1174,7 @@ fn parse_response<'a>(
         .map_err(|_| Error::Integrity)?
         .text()
         .map_err(|_| Error::Integrity)?;
-    if returned_connection != connection.connection_name {
+    if returned_connection != connection_name {
         return Err(Error::Security);
     }
     Ok(envelope)

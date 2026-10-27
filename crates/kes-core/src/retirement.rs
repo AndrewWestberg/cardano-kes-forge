@@ -1,24 +1,21 @@
-//! Management-authorized durable device retirement.
-//! The successor records the global deny state before erasing pool secrets and
-//! clearing live slots. External artifacts are intentionally outside this scope.
+//! Bounded, journal-owned device retirement.
+//!
+//! Persist `prepare` before reading/removing any pool. For each live slot,
+//! persist `remove_pool` before physically erasing and read-verifying the whole
+//! slot. Recovery must also erase unreferenced slots. Neither transition proves
+//! physical cleanup or authorizes a success response: the firmware storage owner
+//! must establish that every slot is blank before publishing the replay result.
 use crate::management::{Action, Target, VerifiedEnvelope};
 use crate::state::{
     Device, DeviceRetirement, DirectorySnapshot, ManagementReplay, ManagementResult,
     PoolRegistration, PoolTombstone, StateError,
 };
-use crate::types::Revision;
+use crate::types::{HardwareSlot, Revision};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Outcome {
-    Applied {
-        revision: Revision,
-        retired_pools: usize,
-        external_backups_unchanged: bool,
-    },
-    AlreadyCommitted {
-        revision: Revision,
-        external_backups_unchanged: bool,
-    },
+pub enum Preparation {
+    Prepared { revision: Revision },
+    AlreadyPrepared { revision: Revision },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -32,6 +29,7 @@ pub enum Error {
     InconsistentPoolState,
     Capacity,
     CredentialRevoked,
+    NotPrepared,
     State(StateError),
 }
 
@@ -41,15 +39,15 @@ impl From<StateError> for Error {
     }
 }
 
-pub fn retire(
+/// Build the global deny successor, leaving live references intact. An exact
+/// replay returns only preparation evidence, NEVER evidence of erased flash.
+/// The fixed replay revision identifies the deny marker; directory cleanup may
+/// subsequently commit several strictly increasing revisions.
+pub fn prepare(
     directory: &mut DirectorySnapshot,
-    pools: &mut [PoolRegistration],
     envelope: &VerifiedEnvelope<'_>,
-) -> Result<Outcome, Error> {
+) -> Result<Preparation, Error> {
     Device::from_authenticated_snapshot(directory)?;
-    if directory.pending_deletion.is_some() {
-        return Err(Error::InconsistentPoolState);
-    }
     let fields = envelope.fields();
     if fields.action != Action::DeviceRetire {
         return Err(Error::WrongAction);
@@ -57,7 +55,10 @@ pub fn retire(
     if fields.target != Target::Device || directory.config.identity.device_id() != &fields.device {
         return Err(Error::WrongTarget);
     }
-    let (revision, replay, resuming_cleanup) = if let Some(retirement) = directory.retirement {
+    if directory.pending_deletion.is_some() || directory.pending_enrollment.is_some() {
+        return Err(Error::InconsistentPoolState);
+    }
+    if let Some(retirement) = directory.retirement {
         let replay = retirement.management_replay;
         if fields.sequence != replay.sequence {
             return Err(Error::Replay);
@@ -67,110 +68,111 @@ pub fn retire(
         {
             return Err(Error::ChangedReplay);
         }
-        if directory.live.iter().all(Option::is_none) {
-            return Ok(Outcome::AlreadyCommitted {
-                revision: retirement.revision,
-                external_backups_unchanged: true,
-            });
-        }
-        (retirement.revision, replay, true)
-    } else {
-        if directory.credential.revoked {
-            return Err(Error::CredentialRevoked);
-        }
-        let expected_sequence = match directory.credential.management_replay {
-            Some(previous) => previous
-                .sequence
-                .checked_increment()
-                .map_err(|_| Error::CounterOverflow)?,
-            None => crate::types::ManagementSequence::new(1),
-        };
-        if fields.sequence != expected_sequence {
-            return Err(Error::Replay);
-        }
-        if fields.expected_revision != directory.revision {
-            return Err(Error::RevisionConflict);
-        }
-        let revision = directory
-            .revision
+        return Ok(Preparation::AlreadyPrepared {
+            revision: retirement.revision,
+        });
+    }
+    if directory.credential.revoked {
+        return Err(Error::CredentialRevoked);
+    }
+    let next_sequence = match directory.credential.management_replay {
+        Some(previous) => previous
+            .sequence
             .checked_increment()
-            .map_err(|_| Error::CounterOverflow)?;
-        (
-            revision,
-            ManagementReplay {
-                sequence: fields.sequence,
-                request: fields.request,
-                payload_digest: *envelope.transcript_digest(),
-                result: ManagementResult::Committed { revision },
-            },
-            false,
-        )
+            .map_err(|_| Error::CounterOverflow)?,
+        None => crate::types::ManagementSequence::new(1),
     };
-
+    if fields.sequence != next_sequence {
+        return Err(Error::Replay);
+    }
+    if fields.expected_revision != directory.revision {
+        return Err(Error::RevisionConflict);
+    }
     let live_count = directory.live.iter().flatten().count();
-    if pools.len() != live_count {
-        return Err(Error::InconsistentPoolState);
-    }
-    for entry in directory.live.iter().flatten() {
-        let matches = pools
-            .iter()
-            .filter(|pool| {
-                pool.pool_id() == entry.pool_id() && pool.incarnation() == entry.incarnation()
-            })
-            .count();
-        if matches != 1 {
-            return Err(Error::InconsistentPoolState);
-        }
-    }
-    let vacant_tombstones = directory
+    if directory
         .tombstones
         .iter()
         .filter(|entry| entry.is_none())
-        .count();
-    if vacant_tombstones < live_count {
+        .count()
+        < live_count
+    {
         return Err(Error::Capacity);
     }
-    if !resuming_cleanup {
-        // Once this field is set, every operational entry point reconstructed
-        // from the candidate fails closed even if cleanup is resumed after an
-        // interruption.
-        directory.retirement = Some(DeviceRetirement {
-            revision,
-            management_replay: replay,
-        });
-        directory.credential.management_replay = Some(replay);
-    }
-    for live_index in 0..directory.live.len() {
-        let Some(entry) = directory.live[live_index] else {
-            continue;
-        };
-        let pool = pools
-            .iter_mut()
-            .find(|pool| {
-                pool.pool_id() == entry.pool_id() && pool.incarnation() == entry.incarnation()
-            })
-            .expect("pool set validated before retirement mutation");
-        pool.erase_all_secrets();
-        let tombstone_index = directory
-            .tombstones
-            .iter()
-            .position(Option::is_none)
-            .expect("tombstone capacity validated before retirement mutation");
-        directory.tombstones[tombstone_index] = Some(PoolTombstone {
-            pool_id: pool.pool_id(),
-            last_incarnation: pool.incarnation(),
-            management_sequence: fields.sequence,
-            certificate_high_water: pool.certificate_high_water(),
-            generation_high_water: pool.generation_high_water(),
-            deletion_revision: revision,
-            management_replay: replay,
-        });
-        directory.live[live_index] = None;
-    }
-    directory.revision = revision;
-    Ok(Outcome::Applied {
+    // Reserve every required cleanup revision before committing permanent deny.
+    // A later interrupted CLEAN may consume additional revisions; recovery still
+    // fails closed on overflow rather than acknowledge incomplete erasure.
+    directory
+        .revision
+        .get()
+        .checked_add(1 + live_count as u64)
+        .ok_or(Error::CounterOverflow)?;
+    let revision = directory
+        .revision
+        .checked_increment()
+        .map_err(|_| Error::CounterOverflow)?;
+    let replay = ManagementReplay {
+        sequence: fields.sequence,
+        request: fields.request,
+        payload_digest: *envelope.transcript_digest(),
+        result: ManagementResult::Committed { revision },
+    };
+    directory.retirement = Some(DeviceRetirement {
         revision,
-        retired_pools: live_count,
-        external_backups_unchanged: true,
-    })
+        management_replay: replay,
+    });
+    directory.credential.management_replay = Some(replay);
+    directory.revision = revision;
+    Ok(Preparation::Prepared { revision })
+}
+
+/// Build one directory cleanup successor from an authenticated pool snapshot.
+/// The caller MUST have persisted the deny marker and MUST persist this
+/// successor before erasing `slot`. Retained history is therefore durable even
+/// if power fails during erasure. Only one cold pool needs to be resident.
+pub fn remove_pool(
+    directory: &mut DirectorySnapshot,
+    slot: HardwareSlot,
+    pool: &PoolRegistration,
+) -> Result<Revision, Error> {
+    Device::from_authenticated_snapshot(directory)?;
+    let retirement = directory.retirement.ok_or(Error::NotPrepared)?;
+    if directory.pending_deletion.is_some() || directory.pending_enrollment.is_some() {
+        return Err(Error::InconsistentPoolState);
+    }
+    let live_index = directory
+        .live
+        .iter()
+        .position(|entry| {
+            entry.is_some_and(|entry| {
+                entry.slot() == slot
+                    && entry.pool_id() == pool.pool_id()
+                    && entry.incarnation() == pool.incarnation()
+            })
+        })
+        .ok_or(Error::InconsistentPoolState)?;
+    let tombstone_index = directory
+        .tombstones
+        .iter()
+        .position(Option::is_none)
+        .ok_or(Error::Capacity)?;
+    let revision = directory
+        .revision
+        .checked_increment()
+        .map_err(|_| Error::CounterOverflow)?;
+    directory.tombstones[tombstone_index] = Some(PoolTombstone {
+        pool_id: pool.pool_id(),
+        last_incarnation: pool.incarnation(),
+        credential_epoch: Some(pool.credential_epoch()),
+        management_sequence: retirement.management_replay.sequence,
+        certificate_high_water: pool.certificate_high_water(),
+        generation_high_water: pool.generation_high_water(),
+        deletion_revision: revision,
+        management_replay: ManagementReplay {
+            result: ManagementResult::Committed { revision },
+            ..retirement.management_replay
+        },
+    });
+    directory.live[live_index] = None;
+    directory.revision = revision;
+    Ok(revision)
 }

@@ -1,6 +1,6 @@
 use super::{device, registration_with_cold};
 use ed25519_dalek::{Signer, SigningKey};
-use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
+use kes_core::crypto::Generation;
 use kes_core::state::{
     Actor, CertificationOutcome, Device, DeviceMode, GenerationSpec, KESGeneration, Lifecycle,
     PoolRegistration, PublicObject, StateError,
@@ -175,13 +175,12 @@ fn candidate(
         .read_exact(&mut *seed)
         .expect("disposable fixture entropy unavailable");
     let lifetime = KesLifetime::new(u64::from(pool.network().max_kes_evolutions())).unwrap();
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    let mut job = Generation::begin(&mut seed, lifetime).unwrap();
     for _ in 0..64 {
         job.step().unwrap();
     }
-    let cache = job.finish().unwrap();
+    let (key, tree) = job.finish().unwrap();
+    let cache = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let mut public_id = [0u8; 16];
     public_id[..8].copy_from_slice(&(step as u64 + 1).to_be_bytes());

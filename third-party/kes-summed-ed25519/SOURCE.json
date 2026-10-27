@@ -41,13 +41,13 @@
     "public_tree_bytes": 4064,
     "public_tree_layout": "version1, 127 BFS nodes of32 bytes; children2n+1/2n+2, leaves63..126",
     "period_metadata": "separate checked0..63, not serialized in conventional signing state",
-    "owned_secret_buffers": "fixed-size zeroizing state and generation seed stack; no Debug/Clone/serde",
+    "owned_secret_buffers": "movable allocation-free cooperative generation owns fixed-size zeroizing signing state, seed stack, and public tree; one leaf per step, drop/cancellation wipes secrets, completion moves period-zero state and validated tree without cloning; no Debug/Clone/serde",
     "erasure_limit": "primitive-internal stack/register erasure is not claimed; host secret execution requires protected disposable lab",
     "source_sha256": {
       "Cargo.toml": "38c6f84599888751c291ecd4a28583f7a5b282b15e270b8005d7300b6bc25deb",
-      "src/lib.rs": "1c77bf9bdf3a7ddfe661c393e4826da4c1a39551e90119d07d524797abc1292e",
+      "src/lib.rs": "34720d09822ae177abd6d827d3337a4e9b94fe2d1bab7343288dbd606e4be449",
       "LICENSE": "eb2e27a1bb68c293f20af47c4bf2314369c9ecb3b99c281b1815b42be0a07e72"
     },
-    "patch_sha256": "5b6858677a6ca3f874c0c98f3d2e9b11430be2d2ee274b410453f4ed4c38b38f"
+    "patch_sha256": "b7d05c267a3af3e09430a26f4c4697d94bedce434121cc0ac1a3b257e0e8d542"
   }
 }

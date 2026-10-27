@@ -5,6 +5,15 @@ use std::collections::BTreeSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+/// A nullable field in a closed schema must be present, even when null.
+pub(crate) fn required_nullable<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::deserialize(deserializer)
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
     InvalidSchema,
@@ -130,7 +139,9 @@ struct MachinePublicFile {
     algorithm: String,
     scope: String,
     device_id: String,
+    #[serde(deserialize_with = "required_nullable")]
     pool_id: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
     incarnation_id: Option<String>,
     credential_epoch: u64,
     public_key: String,
@@ -143,7 +154,9 @@ struct MachinePrivateFile {
     algorithm: String,
     scope: String,
     device_id: String,
+    #[serde(deserialize_with = "required_nullable")]
     pool_id: Option<String>,
+    #[serde(deserialize_with = "required_nullable")]
     incarnation_id: Option<String>,
     credential_epoch: u64,
     public_key: String,

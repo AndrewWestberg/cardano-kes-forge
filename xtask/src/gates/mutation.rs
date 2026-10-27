@@ -27,6 +27,10 @@ struct Campaign {
 struct Plan {
     campaigns: Vec<Campaign>,
     calibration: Producer,
+    // Required after foundation: an approved native cardano-kes-forge build.
+    // Its real recovery_files target runs clean and with a disposable source defect.
+    #[serde(default)]
+    artifact_output_build: Option<String>,
 }
 
 fn command(
@@ -244,7 +248,7 @@ pub fn run(frozen: &Frozen, gate: &Gate, out_dir: &Path) -> Result<Report> {
         reading(&output_dir.join("mutants.out/outcomes.json"), &controls)?;
     let mut modules = BTreeMap::new();
     let mut cases = 0;
-    let calibration;
+    let mut calibration;
     if frozen.definition.increment == "setup" {
         behavior::exact_scopes(gate, ["mutation".to_owned()].into_iter())?;
         modules.insert("mutation".into(), control_reading["infrastructure"].clone());
@@ -297,11 +301,20 @@ pub fn run(frozen: &Frozen, gate: &Gate, out_dir: &Path) -> Result<Report> {
                 );
             }
         }
-        let mut modes = vec![super::sensitivity::STALE_PERIOD];
+        calibration = behavior::calibration(
+            frozen,
+            &runtime,
+            &plan.calibration,
+            &[super::sensitivity::STALE_PERIOD],
+        )?;
         if frozen.definition.increment != "foundation" {
-            modes.push(super::sensitivity::ARTIFACT_AUTHENTICATION_OR_PUBLICATION);
+            let build = plan
+                .artifact_output_build
+                .as_deref()
+                .ok_or("unavailable: mutation plan requires an approved artifact_output_build")?;
+            calibration["artifact_output"] =
+                super::sensitivity::artifact_output_calibration(frozen, &runtime, build)?;
         }
-        calibration = behavior::calibration(frozen, &runtime, &plan.calibration, modes.as_slice())?;
         let source_root = runtime.path.join("mutation-source");
         behavior::copy_candidate(frozen, &source_root)?;
         for (index, campaign) in plan.campaigns.into_iter().enumerate() {

@@ -30,6 +30,7 @@ fn hex(bytes: &[u8]) -> String {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Descriptor {
     pub generation: [u8; 16],
+    pub generation_number: u64,
     pub verification_key: [u8; 32],
     pub certificate_digest: Option<[u8; 32]>,
     pub certificate_start: Option<u64>,
@@ -234,6 +235,7 @@ mod tests {
     fn descriptor(generation: u8, revision: u64, lifecycle: &str) -> Descriptor {
         Descriptor {
             generation: [generation; 16],
+            generation_number: u64::from(generation),
             verification_key: [generation; 32],
             certificate_digest: (lifecycle != "staged").then_some([generation; 32]),
             certificate_start: (lifecycle != "staged").then_some(100),

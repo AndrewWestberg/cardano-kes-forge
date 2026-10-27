@@ -4,7 +4,11 @@ pub mod client;
 pub mod config;
 pub mod credentials;
 pub mod daemon;
+#[cfg(feature = "development")]
+pub mod development;
 pub mod latency;
+pub mod management;
+pub(crate) mod memory;
 pub mod observation;
 pub mod operations;
 pub mod provisioning;

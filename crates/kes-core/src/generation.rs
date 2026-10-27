@@ -1,13 +1,15 @@
 //! Generation admission, immutable public-object publication and backup retrieval.
 //! The caller owns the cooperative crypto scheduler and durable object backend.
 use crate::backup::{self, Metadata};
-use crate::crypto::{CryptoError, Generation, KesKey, PublicTreeBuffer, VerifiedPublicTree};
+use crate::crypto::{CryptoError, Generation, KesKey, VerifiedPublicTree};
+use crate::session::DeviceIdentityKey;
 use crate::state::{
     Actor, GenerationPolicy, GenerationSpec, KESGeneration, Lifecycle, MAX_PUBLIC_OBJECT_BYTES,
     PoolRegistration, PublicObject, PublicObjectRef, StateError,
 };
-use crate::types::{DeviceId, GenerationId, GenerationNumber, RequestId, Revision, TypeError};
-use ed25519_dalek::SigningKey;
+use crate::types::{
+    DeviceId, GenerationId, GenerationNumber, KesLifetime, RequestId, Revision, TypeError,
+};
 use rand_chacha::rand_core::TryCryptoRng;
 use zeroize::Zeroizing;
 
@@ -88,6 +90,10 @@ pub struct GenerationCheckpoint {
     pub generation: GenerationId,
     pub generation_number: GenerationNumber,
     pub outcome: CheckpointOutcome,
+    pub expected_revision: Revision,
+    pub policy: GenerationPolicy,
+    /// Distinguishes an explicit fresh attempt from stale pre-abort RAM handles.
+    pub attempt: u64,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -104,6 +110,9 @@ struct GenerationRecord {
     generation: GenerationId,
     generation_number: GenerationNumber,
     state: RecordState,
+    expected_revision: Revision,
+    policy: GenerationPolicy,
+    attempt: u64,
 }
 
 /// Per-pool public operation memory. Persist this record with the pool snapshot;
@@ -116,14 +125,13 @@ impl GenerationCoordinator {
     pub const fn new() -> Self {
         Self { record: None }
     }
-    /// Restore authenticated public operation memory after reboot. A job cannot
-    /// survive reboot without its secret workspace, so unfinished work becomes
-    /// `NOT_COMMITTED`; a committed pool descriptor still takes precedence.
+    /// Restore public replay memory without claiming that interrupted work has
+    /// been cleaned. Durable recovery must journal the explicit abort before
+    /// reporting `NOT_COMMITTED`; this does not reconstruct a crypto job.
     pub const fn from_checkpoint(checkpoint: GenerationCheckpoint) -> Self {
         let state = match checkpoint.outcome {
-            CheckpointOutcome::InProgress | CheckpointOutcome::NotCommitted => {
-                RecordState::NotCommitted
-            }
+            CheckpointOutcome::InProgress => RecordState::InProgress,
+            CheckpointOutcome::NotCommitted => RecordState::NotCommitted,
             CheckpointOutcome::Committed => RecordState::Committed,
         };
         Self {
@@ -133,6 +141,9 @@ impl GenerationCoordinator {
                 generation: checkpoint.generation,
                 generation_number: checkpoint.generation_number,
                 state,
+                expected_revision: checkpoint.expected_revision,
+                policy: checkpoint.policy,
+                attempt: checkpoint.attempt,
             }),
         }
     }
@@ -144,6 +155,9 @@ impl GenerationCoordinator {
                 payload_digest: record.payload_digest,
                 generation: record.generation,
                 generation_number: record.generation_number,
+                expected_revision: record.expected_revision,
+                policy: record.policy,
+                attempt: record.attempt,
                 outcome: match record.state {
                     RecordState::InProgress => CheckpointOutcome::InProgress,
                     RecordState::Committed => CheckpointOutcome::Committed,
@@ -161,6 +175,19 @@ impl GenerationCoordinator {
         entropy: &mut impl TryCryptoRng,
     ) -> Result<Admission, Error<core::convert::Infallible>> {
         authorize(request.actor, pool)?;
+        if pool.credential_revoked() {
+            return Err(Error::State(StateError::PolicyChanged));
+        }
+        if let Some(generation) = retained_by_request(pool, request.request, None) {
+            if generation.number() != request.next_generation_number
+                || generation.creation_payload_digest() != &request.payload_digest
+            {
+                return Err(Error::State(StateError::GenerationConflict));
+            }
+            return Ok(Admission::Existing(OperationStatus::Committed(
+                GenerationDescriptor::from_generation(generation),
+            )));
+        }
         if let Some(record) = self.record {
             if record.request == request.request {
                 if record.payload_digest != request.payload_digest
@@ -197,7 +224,10 @@ impl GenerationCoordinator {
             payload_digest: request.payload_digest,
             generation,
             generation_number: request.next_generation_number,
+            expected_revision: request.expected_revision,
+            policy: pool.generation_policy(),
             state: RecordState::InProgress,
+            attempt: 0,
         };
         self.record = Some(record);
         Ok(Admission::Started(GenerationOperation {
@@ -307,7 +337,7 @@ impl GenerationCoordinator {
         mut key: KesKey,
         tree: &VerifiedPublicTree<'_>,
         device: DeviceId,
-        identity: &SigningKey,
+        identity: &DeviceIdentityKey,
         entropy: &mut impl TryCryptoRng,
         store: &mut S,
         write_buffer: &mut [u8; MAX_PUBLIC_OBJECT_BYTES],
@@ -327,7 +357,7 @@ impl GenerationCoordinator {
                 return Err(Error::Crypto(error));
             }
         };
-        let artifact = match backup::create(
+        let artifact = match identity.create_backup(
             &key,
             Metadata {
                 device,
@@ -338,7 +368,6 @@ impl GenerationCoordinator {
                 recipient_public_key: *pool.recipient_public_key(),
                 recipient_id: *operation.policy.recipient_id(),
             },
-            identity,
             entropy,
         ) {
             Ok(value) => value,
@@ -504,18 +533,17 @@ impl GenerationOperation {
     }
 }
 
-/// Seed a caller-owned cooperative generation. The returned job performs one
-/// leaf per `step`; the firmware scheduler retains the original request deadline.
-pub fn begin_key_generation<'state, 'tree>(
+/// Seed an owned cooperative generation. The returned job performs one leaf per
+/// `step`; the firmware scheduler retains the original request deadline.
+pub fn begin_key_generation(
     entropy: &mut impl TryCryptoRng,
-    key: &'state mut KesKey,
-    tree: &'tree mut PublicTreeBuffer,
-) -> Result<Generation<'state, 'tree>, BeginError> {
+    lifetime: KesLifetime,
+) -> Result<Generation, BeginError> {
     let mut seed = Zeroizing::new([0; 32]);
     entropy
         .try_fill_bytes(&mut seed[..])
         .map_err(|_| BeginError::Entropy)?;
-    Generation::begin(&mut seed, key, tree).map_err(BeginError::Crypto)
+    Generation::begin(&mut seed, lifetime).map_err(BeginError::Crypto)
 }
 
 pub struct BackupResult<'a> {
@@ -636,4 +664,340 @@ fn retained_by_id(pool: &PoolRegistration, generation_id: GenerationId) -> Optio
         .into_iter()
         .flatten()
         .find(|generation| generation.id() == generation_id)
+}
+
+/// A durable operation failure. Journal failures invalidate the sole live owner;
+/// callers must recover, never retry against its mutated RAM.
+#[derive(Debug, Eq, PartialEq)]
+pub enum DurableGenerationError<E> {
+    Operation(crate::activation::OperationError),
+    Generation(Error<E>),
+}
+
+/// A signed pool policy transaction, including its replay-only result.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PoolManagementOutcome {
+    pub revision: Revision,
+    pub committed_write: bool,
+    pub cancelled_generation: Option<GenerationId>,
+    pub archive: Option<crate::recipient::ArchiveRequirement>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PoolManagementError {
+    Operation(crate::activation::OperationError),
+    Credential(crate::credentials::Error),
+    Recipient(crate::recipient::Error),
+}
+
+impl crate::activation::DurablePool {
+    /// Apply an already offline-verified pool policy change or staged discard.
+    ///
+    /// `cancel` must synchronously drop/wipe the actual owned crypto job and
+    /// retire its scheduler lease. The caller must first ensure that any live
+    /// job belongs to this pool and its authenticated IN_PROGRESS checkpoint.
+    /// The callback is infallible and runs only after every signed transition
+    /// precondition succeeds, never on rejected requests or exact retries.
+    /// Credential/recipient commits abort the checkpoint in the SAME snapshot,
+    /// so an old operation cannot publish or restart under the new policy.
+    /// Persistence failure invalidates this owner and must never be ACKed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn manage_pool_policy<F: crate::journal::Flash, R: TryCryptoRng>(
+        &mut self,
+        envelope: &crate::management::VerifiedEnvelope<'_>,
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+        cancel: impl FnOnce(GenerationId),
+    ) -> Result<PoolManagementOutcome, PoolManagementError> {
+        use crate::{
+            credentials::CredentialOutcome, management::Action, recipient::ReplacementOutcome,
+        };
+        self.ensure_usable()
+            .map_err(PoolManagementError::Operation)?;
+        let checkpoint = self
+            .state
+            .generation_checkpoint()
+            .filter(|checkpoint| checkpoint.outcome == CheckpointOutcome::InProgress);
+        // This coordinator is only a public transition validator, not the
+        // owner of the running secret job. The real job is erased by `cancel`
+        // below, after validation. Never construct a dummy KesKey workspace.
+        let mut validator = GenerationCoordinator::default();
+        let (revision, committed_write, archive) = match envelope.fields().action {
+            Action::CredentialReplace | Action::CredentialRevoke => {
+                match crate::credentials::change_pool_credential(
+                    &mut self.state,
+                    &mut validator,
+                    None,
+                    envelope,
+                )
+                .map_err(PoolManagementError::Credential)?
+                {
+                    CredentialOutcome::Applied { revision, .. } => (revision, true, None),
+                    CredentialOutcome::AlreadyCommitted { revision } => (revision, false, None),
+                }
+            }
+            Action::RecipientReplace => {
+                match crate::recipient::replace(&mut self.state, &mut validator, None, envelope)
+                    .map_err(PoolManagementError::Recipient)?
+                {
+                    ReplacementOutcome::Applied {
+                        revision, archive, ..
+                    } => (revision, true, Some(archive)),
+                    ReplacementOutcome::AlreadyCommitted { revision } => (revision, false, None),
+                }
+            }
+            Action::StagedDiscard => {
+                match crate::credentials::discard_staged(&mut self.state, envelope)
+                    .map_err(PoolManagementError::Credential)?
+                {
+                    crate::credentials::DiscardOutcome::Applied { revision, .. } => {
+                        (revision, true, None)
+                    }
+                    crate::credentials::DiscardOutcome::AlreadyCommitted { revision } => {
+                        (revision, false, None)
+                    }
+                }
+            }
+            _ => {
+                return Err(PoolManagementError::Credential(
+                    crate::credentials::Error::WrongAction,
+                ));
+            }
+        };
+        let cancelled_generation = checkpoint
+            .filter(|_| committed_write && envelope.fields().action != Action::StagedDiscard)
+            .map(|checkpoint| checkpoint.generation);
+        if let Some(generation) = cancelled_generation {
+            cancel(generation);
+        }
+        if committed_write {
+            self.persist(journal, flash, rng, work)
+                .map_err(PoolManagementError::Operation)?;
+        }
+        Ok(PoolManagementOutcome {
+            revision,
+            committed_write,
+            cancelled_generation,
+            archive,
+        })
+    }
+}
+
+impl crate::activation::DurablePool {
+    fn generation_coordinator(&self) -> GenerationCoordinator {
+        self.state
+            .generation_checkpoint()
+            .map(GenerationCoordinator::from_checkpoint)
+            .unwrap_or_default()
+    }
+
+    /// Recover authenticated authority and reclaim unreferenced public objects
+    /// before durably aborting any interrupted, RAM-only cryptographic job.
+    /// No fresh entropy is used to recreate that job or its secret.
+    pub fn recover_generation<F: crate::journal::Flash, R: TryCryptoRng>(
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+    ) -> Result<Self, crate::activation::OperationError> {
+        let mut pool = Self::from_recovered(journal.recover(flash, rng, work)?);
+        if let Some(mut checkpoint) = pool.state.generation_checkpoint()
+            && checkpoint.outcome == CheckpointOutcome::InProgress
+        {
+            checkpoint.outcome = CheckpointOutcome::NotCommitted;
+            pool.state.set_generation_checkpoint(checkpoint)?;
+            pool.persist(journal, flash, rng, work)?;
+        }
+        Ok(pool)
+    }
+
+    pub fn generation_status(
+        &self,
+        request: RequestId,
+        number: Option<GenerationNumber>,
+    ) -> Result<OperationStatus, crate::activation::OperationError> {
+        self.ensure_usable()?;
+        Ok(self
+            .generation_coordinator()
+            .status(&self.state, request, number))
+    }
+
+    /// The ACK/operation handle is released only after admission reaches CLEAN.
+    /// A lost ACK is reconciled from the intrinsic authenticated checkpoint.
+    pub fn admit_generation<F: crate::journal::Flash, R: TryCryptoRng>(
+        &mut self,
+        request: GenerationRequest,
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+    ) -> Result<Admission, DurableGenerationError<core::convert::Infallible>> {
+        self.ensure_usable()
+            .map_err(DurableGenerationError::Operation)?;
+        let mut coordinator = self.generation_coordinator();
+        let admission = coordinator
+            .admit(&self.state, request, rng)
+            .map_err(DurableGenerationError::Generation)?;
+        if matches!(admission, Admission::Started(_)) {
+            self.state
+                .set_generation_checkpoint(coordinator.checkpoint().expect("admitted record"))
+                .map_err(|e| DurableGenerationError::Operation(e.into()))?;
+            self.persist(journal, flash, rng, work)
+                .map_err(DurableGenerationError::Operation)?;
+        }
+        Ok(admission)
+    }
+
+    /// Explicit opt-in retry after authoritative NOT_COMMITTED. Preserve the
+    /// assigned identity, original digest, policy and admission revision. A
+    /// policy cancellation is terminal and cannot be restarted under new epochs.
+    pub fn restart_generation<F: crate::journal::Flash, R: TryCryptoRng>(
+        &mut self,
+        request: GenerationRequest,
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+    ) -> Result<GenerationOperation, DurableGenerationError<core::convert::Infallible>> {
+        self.ensure_usable()
+            .map_err(DurableGenerationError::Operation)?;
+        authorize(request.actor, &self.state).map_err(DurableGenerationError::Generation)?;
+        let mut checkpoint =
+            self.state
+                .generation_checkpoint()
+                .ok_or(DurableGenerationError::Generation(Error::State(
+                    StateError::GenerationConflict,
+                )))?;
+        if checkpoint.outcome != CheckpointOutcome::NotCommitted
+            || checkpoint.request != request.request
+            || checkpoint.payload_digest != request.payload_digest
+            || checkpoint.generation_number != request.next_generation_number
+            || checkpoint.expected_revision != request.expected_revision
+        {
+            return Err(DurableGenerationError::Generation(Error::State(
+                StateError::GenerationConflict,
+            )));
+        }
+        if checkpoint.policy != self.state.generation_policy() || self.state.credential_revoked() {
+            return Err(DurableGenerationError::Generation(Error::State(
+                StateError::PolicyChanged,
+            )));
+        }
+        if self.state.staged().is_some() {
+            return Err(DurableGenerationError::Generation(Error::State(
+                StateError::StagedConflict,
+            )));
+        }
+        checkpoint.outcome = CheckpointOutcome::InProgress;
+        checkpoint.attempt =
+            checkpoint
+                .attempt
+                .checked_add(1)
+                .ok_or(DurableGenerationError::Generation(Error::State(
+                    StateError::CounterOverflow,
+                )))?;
+        self.state
+            .set_generation_checkpoint(checkpoint)
+            .map_err(|e| DurableGenerationError::Operation(e.into()))?;
+        self.persist(journal, flash, rng, work)
+            .map_err(DurableGenerationError::Operation)?;
+        let coordinator = GenerationCoordinator::from_checkpoint(checkpoint);
+        Ok(GenerationOperation {
+            actor: request.actor,
+            expected_revision: checkpoint.expected_revision,
+            policy: checkpoint.policy,
+            record: coordinator.record.expect("restored record"),
+        })
+    }
+
+    pub fn cancel_generation<F: crate::journal::Flash, R: TryCryptoRng>(
+        &mut self,
+        operation: GenerationOperation,
+        key: &mut KesKey,
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+    ) -> Result<(), DurableGenerationError<core::convert::Infallible>> {
+        self.ensure_usable()
+            .map_err(DurableGenerationError::Operation)?;
+        let mut coordinator = self.generation_coordinator();
+        coordinator
+            .cancel(operation, key)
+            .map_err(DurableGenerationError::Generation)?;
+        // The actual job workspace is erased above. Recover physical object
+        // authority as well; only verified cleanup permits the durable abort.
+        self.invalidate();
+        *self = Self::recover_generation(journal, flash, rng, work)
+            .map_err(DurableGenerationError::Operation)?;
+        Ok(())
+    }
+
+    /// Run immutable object publication using a scoped flash borrow, then commit
+    /// the staged key and COMMITTED checkpoint in one journal transaction. The
+    /// closure invokes `GenerationCoordinator::complete`; it must not acknowledge
+    /// its RAM result. This shape lets the existing firmware object adapter share
+    /// the same flash with the journal without a second state/storage authority.
+    pub fn complete_generation<F: crate::journal::Flash, R: TryCryptoRng, E>(
+        &mut self,
+        journal: &crate::journal::Journal<crate::journal::PoolCodec>,
+        flash: &mut F,
+        rng: &mut R,
+        work: &mut crate::journal::Workspaces<'_>,
+        publish: impl FnOnce(
+            &mut F,
+            &mut R,
+            &mut PoolRegistration,
+            &mut GenerationCoordinator,
+        ) -> Result<GenerationDescriptor, Error<E>>,
+    ) -> Result<GenerationDescriptor, DurableGenerationError<E>> {
+        self.ensure_usable()
+            .map_err(DurableGenerationError::Operation)?;
+        let mut coordinator = self.generation_coordinator();
+        if !coordinator.has_in_progress() {
+            return Err(DurableGenerationError::Generation(Error::State(
+                StateError::GenerationConflict,
+            )));
+        }
+        let original = coordinator.checkpoint().expect("in-progress record");
+        let descriptor = match publish(flash, rng, &mut self.state, &mut coordinator) {
+            Ok(descriptor) => descriptor,
+            Err(error) => {
+                // A failed public write/discard may leave an orphan. Discard all
+                // RAM candidates and recover physical authority, including
+                // erase/readback of both unreferenced slots, before recording
+                // NOT_COMMITTED. A flash failure leaves this owner invalid.
+                self.invalidate();
+                *self = Self::recover_generation(journal, flash, rng, work)
+                    .map_err(DurableGenerationError::Operation)?;
+                return Err(DurableGenerationError::Generation(error));
+            }
+        };
+        let checkpoint = coordinator.checkpoint().expect("operation record");
+        let mut expected = original;
+        expected.outcome = CheckpointOutcome::Committed;
+        let staged_matches = self.state.staged().is_some_and(|g| {
+            g.id() == original.generation
+                && g.number() == original.generation_number
+                && g.creation_request() == original.request
+                && g.creation_payload_digest() == &original.payload_digest
+                && GenerationDescriptor::from_generation(g) == descriptor
+        });
+        if checkpoint != expected
+            || !staged_matches
+            || original.policy != self.state.generation_policy()
+            || self.state.credential_revoked()
+        {
+            self.invalidate();
+            return Err(DurableGenerationError::Generation(Error::State(
+                StateError::GenerationConflict,
+            )));
+        }
+        self.state.finish_generation_checkpoint(checkpoint);
+        self.persist(journal, flash, rng, work)
+            .map_err(DurableGenerationError::Operation)?;
+        Ok(descriptor)
+    }
 }

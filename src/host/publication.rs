@@ -1,6 +1,6 @@
 use crate::host::artifact::{self, ExpectedArtifact};
 use crate::host::client::{BackupResult, GenerationResult};
-use crate::host::config::PoolConnection;
+use crate::host::config::PublicPoolConnection;
 use rustix::fs::{AtFlags, Mode, OFlags};
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -44,7 +44,7 @@ pub struct GenerationFiles<'a> {
 }
 
 pub fn publish_generation(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     result: &GenerationResult,
     backup: &BackupResult,
@@ -67,7 +67,7 @@ pub fn publish_generation(
 }
 
 pub fn publish_generation_with<F: PublicationFault>(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     request: [u8; 16],
     result: &GenerationResult,
     backup: &BackupResult,
@@ -137,7 +137,7 @@ pub fn publish_generation_with<F: PublicationFault>(
 }
 
 pub fn publish_backup(
-    connection: &PoolConnection,
+    connection: &PublicPoolConnection,
     expected_generation: [u8; 16],
     backup: &BackupResult,
     output: &Path,

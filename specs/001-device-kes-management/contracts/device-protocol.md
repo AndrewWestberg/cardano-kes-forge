@@ -32,6 +32,7 @@ Round-robin host service and bounded generation steps prevent a flooding pool mo
 ## Authenticated device identity and sessions
 
 1. `INFO` without a session returns protocol version, device ID, pinned identity/HPKE public keys, fresh 32-byte boot nonce, current open counter for each scope, firmware hash/security version, capability evidence and limits. Sign deterministic response bytes with Ed25519 under domain `cardano-kes-forge/info/v1`. Challenge includes a fresh caller nonce and must be echoed in signed evidence. Rate-limit unauthenticated requests. Verify against the pre-enrolled pin/provisioning record, not keys returned by this message alone.
+   Release-ready `capability_evidence` uses the exact bounded canonical v1 record and independent signature transcript in [security](security.md); a signed mode label alone is not readiness evidence.
 2. `OPEN` targets a pool+incarnation or management scope. Host uses HPKE v1 suite 0x0020/0x0001/0x0003 base mode to the enrolled device HPKE public key; authenticated `info` is the deterministic tuple `["cardano-kes-forge/session/v1", device, boot_nonce, scope, incarnation, credential_epoch, open_counter, request_id]`. Encrypt a fresh 32-byte challenge. The authorized machine Ed25519 key signs that tuple plus encapsulation and ciphertext. Device verifies scope, current epoch and counter before decapsulation. Management transport authentication is not authority to apply a management operation.
 3. Both sides derive separate 32-byte request and response MAC keys through RFC 9180 `Export` with labels `cardano-kes-forge/request/v1` and `cardano-kes-forge/response/v1`. Device returns fresh 16-byte session ID and challenge acknowledgement authenticated with the response key. Increment open counter only after authenticated OPEN; atomically replace only that scope's session. No pool key/password travels in the handshake. Clear HPKE ephemeral/shared material after session establishment.
 4. A session has separate monotonic u64 request/response sequence spaces; one host daemon serializes each pool. Reboot, disconnect, revocation, epoch change or overflow invalidates it. A fresh unpredictable boot nonce prevents replay across restart without per-signature flash writes. Host reconnects unattended, rechecks release evidence, opens sessions and reconciles authoritative state before signing. No fallback.
@@ -52,7 +53,7 @@ The implemented `kes_protocol` codec is allocation-free: caller-owned receive/en
 
 All maps are closed and every field is required unless prefixed `?`. `Bn` means an exact n-byte bytestring, `U` an unsigned64, `U32` unsigned32, `Tn` UTF-8 text of at most n bytes without NUL. Positive U excludes zero. Map keys are text and sorted by their exact encoded bytes. Only unsigned integers, bytes, text, arrays, maps, bool and null are admitted; canonical syntax does not normalize text. `pool`/`incarnation` are either B28/B16 together or both null. Wire network names are snake_case; bootstrap JSON retains its existing camelCase names.
 
-Authenticated response fields are exactly the request fields minus `budget_ms`, plus `request_seq` and `status`; response `seq` is the device sequence. Local request fields are exactly `{version,connection,request,budget_ms,op,payload}`, and local response fields `{version,connection,request,op,status,payload}`. Connection names are 1–64 ASCII alphanumeric/`-_.`. Dedicated unauthenticated-session envelopes are:
+Authenticated response fields are exactly the request fields minus `budget_ms`, plus `request_seq` and `status`; response `seq` is the device sequence. Local request fields are exactly `{version,connection,request,budget_ms,op,payload,?target}`, and local response fields `{version,connection,request,op,status,payload}`. Optional `target` is `[device:B16,pool:B28|null,incarnation:B16|null]`, with both scope identifiers null or both present. Rust operator clients supply this public expected identity; the daemon compares it to the configured route before opening a session or contacting USB. A mismatch returns `WRONG_DEVICE` or `WRONG_POOL`. It is not authorization; peer UID and device session authentication remain mandatory. Existing native six-field requests omit it. The target never enters device envelopes or local responses. Connection names are 1–64 ASCII alphanumeric/`-_.`. Dedicated unauthenticated-session envelopes are:
 
 | Kind | Exact fields, in addition to version1/op |
 |---|---|
@@ -63,6 +64,16 @@ Authenticated response fields are exactly the request fields minus `budget_ms`, 
 
 INFO/OPEN are rejected in ordinary device/local envelopes. Pool scope is required for generation, backup, certification, activation, scheduling, evolution, signing, observation and development inspection; update operations require device scope. STATUS/OP_STATUS/MANAGE/OPEN admit either scope. DEV_INSPECT is rejected in both local socket directions; its eventual development-only handler is not implemented by the codec.
 
+
+### Local operator STATUS diagnostics
+
+Only a `LocalRequest` STATUS may add `host_diagnostics:true` to its otherwise unchanged payload. The daemon strips that flag before authenticated device encoding. Ordinary native STATUS requests and responses retain their original schema and do not allocate or transmit this diagnostic snapshot.
+
+An opted-in successful local STATUS response adds exactly `host_device:B16`, `host_pool:B28|null`, `host_incarnation:B16|null`, `host_observation` and `host_latency` to the required wire payload. Host pool/incarnation are paired; the operator validates them against public configuration. These additions are forbidden in authenticated device responses.
+
+`host_observation` is null for management scope, otherwise the nine-element tuple `[state,confirmedAgeMs,nodePeriodAgeMs,confirmedObservedAt,nodePeriodObservedAt,context|null,historicalDescriptor|null,ready|null,remaining|null]`. `host_latency` is null for management, otherwise eight entries in `GENERATE,GET_BACKUP,CERTIFY,ACTIVATE,SCHEDULE,EVOLVE,SIGN,OBSERVE_PERIOD` order. Each entry is null or `[requestId,durationMs,outcome,code,observedAt,ageMs,...context]`.
+
+Context is flattened to preserve the four-level CBOR bound: `[device:B16,bootNonce:B32,session:B16,pool:B28,incarnation:B16,networkMagic:U,genesisDigest:B32,slotsPerKesPeriod:U,maxKesEvolutions:U,generation:B16|null,certificateDigest:B32|null,revision:U|null]`. Observation context carries that twelve-element array; latency appends its twelve elements after the six sample fields. UTC strings are display metadata; ages use only the daemon monotonic clock. The operator converts this bounded local snapshot into the exact public JSON schema in cli-backup.md. A read never renews either observation or the last completed operation sample.
 
 ## Operation catalog
 
@@ -113,8 +124,9 @@ Pool `STATUS` can show the public authorization state, not machine credentials. 
 |---|---|
 | INFO | `challenge:B32,identity_public_key:B32,hpke_public_key:B32,boot_nonce:B32,open_counters:Counter[<=33],firmware_digest:B32,security_version:U,hardware_policy_digest:B32,security_mode:Security,capability_evidence:bytes<=2048,limits:Limits` |
 | OPEN | `session:B16,challenge_acknowledgement:B32` |
-| STATUS | `health:Health,security_mode:Security,revision:U,credential_epoch:U,revoked:bool,active:Descriptor|null,staged:Descriptor|null,blocking_reason:T256,directory:DirectoryEntry[<=32]` |
-| GENERATE/OP_STATUS/CERTIFY/ACTIVATE/SCHEDULE/OBSERVE_PERIOD | Descriptor |
+| STATUS | `health:Health,security_mode:Security,revision:U,credential_epoch:U,revoked:bool,active:Descriptor|null,staged:Descriptor|null,blocking_reason:T256,directory:DirectoryEntry[<=32],?management_sequence:U`; management-scope consumers require `management_sequence` |
+| GENERATE/CERTIFY/ACTIVATE/SCHEDULE/OBSERVE_PERIOD | Descriptor |
+| OP_STATUS | Descriptor for a generation operation, or exactly `{management_sequence:U,revision:U}` for a committed management operation; never a hybrid |
 | GET_BACKUP | `generation:B16,backup:complete BackupArtifact<=2048,artifact_digest:B32` |
 | EVOLVE | Context |
 | SIGN | Context plus `signature:B448,message_digest:B32` |
@@ -122,11 +134,13 @@ Pool `STATUS` can show the public authorization state, not machine credentials. 
 | UPDATE_BEGIN/CHUNK/FINALIZE | `manifest_digest:B32,offset:U,revision:U` |
 | DEV_INSPECT | Context plus `state:B608`, never an initial-state backup |
 
-`Context` is `{revision:U,generation:B16,certificate_digest:B32,relative_period:0..63,lifecycle:Lifecycle,health:Health}`. `Descriptor` is `{generation:B16,generation_number:U,creation_request:B16,verification_key:B32,artifact_digest:B32,revision:U,certificate_digest:B32|null,relative_period:0..63,lifecycle:Lifecycle,health:Health,backup_available:bool,certificate_start:U|null,certificate_counter:U|null}`. `DirectoryEntry` is `{pool:B28,incarnation:B16,revision:U,credential_epoch:U,revoked:bool,health:Health,active:B16|null,staged:B16|null}`; generation references avoid excessive nesting. Scope-specific directory/descriptor contents remain runtime invariants.
+`Context` is `{revision:U,generation:B16,certificate_digest:B32,relative_period:0..63,lifecycle:Lifecycle,health:Health}`. `Descriptor` is `{generation:B16,generation_number:U,creation_request:B16,verification_key:B32,artifact_digest:B32,revision:U,certificate_digest:B32|null,relative_period:0..63,lifecycle:Lifecycle,health:Health,backup_available:bool,certificate_start:U|null,certificate_counter:U|null}`. `DirectoryEntry` is `{pool:B28,incarnation:B16,revision:U,management_sequence:U,credential_epoch:U,revoked:bool,deleted:bool,health:Health,active:B16|null,staged:B16|null}`; generation references avoid excessive nesting. The management directory includes retained deletion tombstones within the same 32-entry bound. A deleted entry retains its last incarnation and management sequence, has `revoked=true`, and has null active/staged references. Scope-specific directory/descriptor contents remain runtime invariants.
 
 `Counter` is `{pool:B28|null,incarnation:B16|null,open_counter:U}` with paired scope. `Limits` fixes U32 values `{frame_bytes:8192,message_bytes:4096,certificate_bytes:1024,backup_bytes:2048,pools:32,sessions:33}`. Health is `healthy|damaged|unavailable`; Lifecycle is `staged|certified-staged|active|expired|retired`; Security is `development|release-unprovisioned|release-ready`. A label is never evidence of readiness.
 
 `IN_PROGRESS` is restricted to GENERATE/OP_STATUS with `{request:B16,generation_number:U}`. OP_STATUS `UNKNOWN|NOT_COMMITTED|RESULT_RECLAIMED` uses `{request:B16,?generation_number:U}`. Committed `EXPIRED` on SIGN/EVOLVE/OBSERVE_PERIOD uses Context, never a signature. Other non-OK errors use `{scope:"device"|"pool",diagnostic:T256}`; public diagnostics and authenticity must be enforced by the runtime.
+
+For management `OP_STATUS`, omit `generation_number`. Only authenticated `NOT_COMMITTED` authorizes redispatch of the identical durable authorization. `UNKNOWN`, `IN_PROGRESS`, device unavailability, and deadline expiry retain an uncertain operation record; they do not prove that the mutation failed to commit.
 
 ### Exact management and signed transcript schemas
 

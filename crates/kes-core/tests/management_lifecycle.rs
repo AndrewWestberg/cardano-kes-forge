@@ -1,23 +1,36 @@
 use ed25519_dalek::{Signer, SigningKey};
 use kes_core::cbor::{Encoder, Value};
 use kes_core::credentials::{self, CredentialOutcome, DiscardOutcome};
-use kes_core::crypto::{Generation, KesKey, PublicTreeBuffer};
+use kes_core::crypto::{Generation, KesKey};
 use kes_core::deletion::{self, DeletionOutcome};
 use kes_core::generation::{Admission, GenerationCoordinator, GenerationRequest, OperationStatus};
 use kes_core::journal::{DirectoryCodec, JournalContext, JournalScope, PoolCodec, SnapshotCodec};
 use kes_core::management::{self, Action, SigningFields, Target};
+#[cfg(feature = "protected-runtime")]
 use kes_core::retirement;
+use kes_core::session::{DeviceHpkeKey, OpenContext, Scope, SessionError, accept_open, begin_open};
 use kes_core::state::{
-    Actor, Device, DeviceConfig, DeviceCredential, DeviceMode, DeviceRetirement, DirectoryEntry,
-    DirectorySnapshot, Enrollment, GenerationSpec, Health, KESGeneration, ManagementReplay,
-    ManagementResult, PoolRegistration, PublicObject, StateError, UsePolicy,
+    Actor, DeviceConfig, DeviceCredential, DeviceMode, DirectoryEntry, DirectorySnapshot,
+    Enrollment, GenerationSpec, Health, KESGeneration, PoolRegistration, PublicObject,
 };
+#[cfg(feature = "protected-runtime")]
+use kes_core::state::{Device, StateError, UsePolicy};
 use kes_core::types::{
     CredentialEpoch, DeviceId, DeviceIdentityBinding, GenerationId, GenerationNumber, HardwareSlot,
     IncarnationId, KesLifetime, ManagementSequence, NetworkBinding, PoolId, RequestId, Revision,
 };
 use rand_chacha::{ChaCha20Rng, rand_core::SeedableRng};
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
+
+#[allow(dead_code)]
+#[path = "journal_faults/flash.rs"]
+mod enrollment_flash;
+
+#[cfg(feature = "protected-runtime")]
+#[allow(dead_code)]
+#[path = "journal_faults/flash.rs"]
+mod retirement_flash;
 
 const DEVICE: DeviceId = DeviceId::from_bytes([0x31; 16]);
 const BACKUP: &[u8] = include_bytes!("../../../fuzz/corpus/frame/backup-public-structure");
@@ -61,15 +74,18 @@ fn pool(index: u8, incarnation: IncarnationId) -> PoolRegistration {
 }
 
 fn stage(pool: &mut PoolRegistration, byte: u8) -> GenerationId {
-    let lifetime = KesLifetime::new(64).unwrap();
     let mut seed = [byte; 32];
-    let mut key = KesKey::erased(lifetime);
-    let mut tree = PublicTreeBuffer::new();
-    let mut operation = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+    stage_seeded(pool, byte, &mut seed)
+}
+
+fn stage_seeded(pool: &mut PoolRegistration, byte: u8, seed: &mut [u8; 32]) -> GenerationId {
+    let lifetime = KesLifetime::new(64).unwrap();
+    let mut operation = Generation::begin(seed, lifetime).unwrap();
     for _ in 0..64 {
         operation.step().unwrap();
     }
-    let verified = operation.finish().unwrap();
+    let (key, tree) = operation.finish().unwrap();
+    let verified = tree.verify(&key.verification_key().unwrap()).unwrap();
     let verification_key = key.verification_key().unwrap();
     let generation = GenerationId::from_bytes([byte; 16]);
     let object =
@@ -226,6 +242,7 @@ fn directory_snapshot(
         retirement: None,
         credential: DeviceCredential::new([0x36; 32]),
         pending_deletion: None,
+        pending_enrollment: None,
         live,
         tombstones: [None; kes_core::state::DIRECTORY_IDENTITY_CAPACITY],
     }
@@ -443,7 +460,10 @@ fn credential_replace_revoke_and_staged_discard_are_replay_safe_across_restart()
 fn management_transport_credential_epoch_and_revocation_survive_restart() {
     let management = SigningKey::from_bytes(&[0x55; 32]);
     let mut directory = directory_snapshot(&management, &[], 0);
-    let replacement_key = [0x56; 32];
+    let stolen_initial = SigningKey::from_bytes(&[0x5c; 32]);
+    directory.credential.public_key = stolen_initial.verifying_key().to_bytes();
+    let replacement_signer = SigningKey::from_bytes(&[0x56; 32]);
+    let replacement_key = replacement_signer.verifying_key().to_bytes();
     let replacement_payload = encode_payload(|encoder| {
         encoder.map(2).unwrap();
         encoder.text("credential_epoch").unwrap();
@@ -483,6 +503,64 @@ fn management_transport_credential_epoch_and_revocation_survive_restart() {
         CredentialOutcome::AlreadyCommitted {
             revision: Revision::new(1),
         }
+    );
+
+    // OPEN authorization comes from the restored current directory, not the
+    // initial ceremony or a candidate credential's self-declared epoch.
+    let hpke = DeviceHpkeKey::from_seed(Zeroizing::new([0x59; 32]));
+    let expected = OpenContext::new(
+        DEVICE,
+        [0x5a; 32],
+        Scope::Management,
+        directory.credential.epoch,
+        0,
+        RequestId::from_bytes([0x5b; 16]),
+    );
+    let unauthorized = SigningKey::from_bytes(&[0x5d; 32]);
+    for (epoch, signer, error) in [
+        (0, &stolen_initial, SessionError::InvalidStructure),
+        (2, &unauthorized, SessionError::InvalidStructure),
+        (1, &stolen_initial, SessionError::Authentication),
+        (1, &unauthorized, SessionError::Authentication),
+    ] {
+        let candidate = OpenContext {
+            credential_epoch: CredentialEpoch::new(epoch),
+            ..expected
+        };
+        let mut host_rng = ChaCha20Rng::from_seed([0x5e; 32]);
+        let (request, _) =
+            begin_open(candidate, &hpke.public_key(), signer, &mut host_rng).unwrap();
+        let mut device_rng = ChaCha20Rng::from_seed([0x5f; 32]);
+        assert_eq!(
+            accept_open(
+                expected,
+                &request,
+                &hpke,
+                &directory.credential.public_key,
+                &mut device_rng,
+            )
+            .err(),
+            Some(error)
+        );
+    }
+    let mut host_rng = ChaCha20Rng::from_seed([0x60; 32]);
+    let (request, _) = begin_open(
+        expected,
+        &hpke.public_key(),
+        &replacement_signer,
+        &mut host_rng,
+    )
+    .unwrap();
+    let mut device_rng = ChaCha20Rng::from_seed([0x61; 32]);
+    assert!(
+        accept_open(
+            expected,
+            &request,
+            &hpke,
+            &directory.credential.public_key,
+            &mut device_rng,
+        )
+        .is_ok()
     );
 
     let revoke_payload = encode_payload(|encoder| {
@@ -687,14 +765,30 @@ fn deletion_retains_history_and_only_fresh_incarnation_can_reenroll() {
     assert_eq!(replay.pool_revision, Revision::new(0));
 }
 
+#[cfg(feature = "protected-runtime")]
+fn fresh_retirement_seed() -> Zeroizing<[u8; 32]> {
+    use std::io::Read;
+    xtask::oracles::protect_memory().expect("protected fresh no-swap runtime required");
+    let mut seed = Zeroizing::new([0; 32]);
+    std::fs::File::open("/dev/urandom")
+        .expect("disposable test entropy unavailable")
+        .read_exact(&mut *seed)
+        .expect("disposable test entropy unavailable");
+    seed
+}
+
+#[cfg(feature = "protected-runtime")]
 #[test]
-fn retirement_denies_restart_and_erases_all_live_pool_secrets() {
-    let management = SigningKey::from_bytes(&[0x71; 32]);
+fn retirement_persists_deny_before_per_pool_history_cleanup() {
+    use kes_core::journal::{
+        Journal, JournalLayout, JournalWorkspace, ObjectWorkspace, SecretCache, Workspaces,
+    };
+    let management = SigningKey::from_bytes(&fresh_retirement_seed());
     let mut first = pool(0x72, IncarnationId::from_bytes([0x73; 16]));
     let mut second = pool(0x74, IncarnationId::from_bytes([0x75; 16]));
-    stage(&mut first, 0x76);
-    stage(&mut second, 0x77);
-    let mut directory = directory_snapshot(&management, &[&first, &second], 2);
+    stage_seeded(&mut first, 0x76, &mut fresh_retirement_seed());
+    stage_seeded(&mut second, 0x77, &mut fresh_retirement_seed());
+    let mut directory = directory_snapshot(&management, &[&first, &second], 0);
     let payload = encode_payload(|encoder| encoder.map(0).unwrap());
     let bytes = signed_envelope(
         &management,
@@ -706,103 +800,630 @@ fn retirement_denies_restart_and_erases_all_live_pool_secrets() {
         &payload,
     );
     let envelope = verify(&bytes, &management);
-    let mut pools = [first, second];
-    let outcome = retirement::retire(&mut directory, &mut pools, &envelope).unwrap();
-    assert_eq!(
-        outcome,
-        retirement::Outcome::Applied {
-            revision: Revision::new(3),
-            retired_pools: 2,
-            external_backups_unchanged: true,
-        }
-    );
-    assert!(
-        pools
-            .iter()
-            .all(|pool| pool.staged().unwrap().is_secret_erased())
-    );
-    assert!(directory.live.iter().all(Option::is_none));
-    assert_eq!(directory.tombstones.iter().flatten().count(), 2);
-
     let context = JournalContext {
         device: DEVICE,
         scope: JournalScope::Directory,
     };
-    let mut encoded = [0; 8192];
-    let length = DirectoryCodec::encode(&directory, context, &mut encoded).unwrap();
-    let recovered = DirectoryCodec::decode(&encoded[..length], context).unwrap();
-    let device = Device::from_authenticated_snapshot(&recovered).unwrap();
+    let storage_root = fresh_retirement_seed();
+    let journal = Journal::<DirectoryCodec>::new(
+        context,
+        JournalLayout::directory(0).unwrap(),
+        &storage_root,
+    )
+    .unwrap();
+    let mut flash = retirement_flash::NorFlash::new(16384);
+    let mut journal_workspace = JournalWorkspace::new();
+    let mut object_workspace = ObjectWorkspace::new();
+    let mut cache = SecretCache::new();
+    let mut work = Workspaces {
+        journal: &mut journal_workspace,
+        object: &mut object_workspace,
+        cache: &mut cache,
+    };
+    let rng_seed = fresh_retirement_seed();
+    let mut rng = ChaCha20Rng::from_seed(*rng_seed);
+    drop(rng_seed);
+    let initial = journal
+        .initialize(&mut flash, &mut rng, &directory, &mut work)
+        .unwrap();
     assert_eq!(
-        device
-            .ensure_operational(UsePolicy::IsolatedDevelopment, None)
-            .err(),
-        Some(StateError::Retired)
+        retirement::prepare(&mut directory, &envelope),
+        Ok(retirement::Preparation::Prepared {
+            revision: Revision::new(1)
+        })
     );
+    assert_eq!(directory.live.iter().flatten().count(), 2);
+    let mut token = journal
+        .transact_successor(&mut flash, &mut rng, &initial, &directory, &mut work)
+        .unwrap();
+    let recovered = journal.recover(&mut flash, &mut rng, &mut work).unwrap();
+    directory = recovered.state;
     assert_eq!(
-        retirement::retire(&mut directory, &mut [], &envelope).unwrap(),
-        retirement::Outcome::AlreadyCommitted {
-            revision: Revision::new(3),
-            external_backups_unchanged: true,
-        }
-    );
-
-    let mut interrupted_pool = pool(0x79, IncarnationId::from_bytes([0x7a; 16]));
-    stage(&mut interrupted_pool, 0x7b);
-    let mut interrupted = directory_snapshot(&management, &[&interrupted_pool], 1);
-    let interrupted_bytes = signed_envelope(
-        &management,
-        Target::Device,
-        1,
-        0x7c,
-        interrupted.revision,
-        Action::DeviceRetire,
-        &payload,
-    );
-    let interrupted_envelope = verify(&interrupted_bytes, &management);
-    let interrupted_revision = Revision::new(2);
-    interrupted.revision = interrupted_revision;
-    interrupted.retirement = Some(DeviceRetirement {
-        revision: interrupted_revision,
-        management_replay: ManagementReplay {
-            sequence: ManagementSequence::new(1),
-            request: RequestId::from_bytes([0x7c; 16]),
-            payload_digest: *interrupted_envelope.transcript_digest(),
-            result: ManagementResult::Committed {
-                revision: interrupted_revision,
-            },
-        },
-    });
-    let interrupted_length = DirectoryCodec::encode(&interrupted, context, &mut encoded).unwrap();
-    interrupted = DirectoryCodec::decode(&encoded[..interrupted_length], context).unwrap();
-    assert_eq!(
-        Device::from_authenticated_snapshot(&interrupted)
+        Device::from_authenticated_snapshot(&directory)
             .unwrap()
             .ensure_operational(UsePolicy::IsolatedDevelopment, None)
             .err(),
         Some(StateError::Retired)
     );
-    let interrupted_pool_context = pool_context(&interrupted_pool, 0);
-    let mut interrupted_pool_bytes = [0; 3440];
-    let interrupted_pool_length = PoolCodec::encode(
-        &interrupted_pool,
-        interrupted_pool_context,
-        &mut interrupted_pool_bytes,
-    )
-    .unwrap();
-    interrupted_pool = PoolCodec::decode(
-        &interrupted_pool_bytes[..interrupted_pool_length],
-        interrupted_pool_context,
-    )
-    .unwrap();
-    let mut remaining = [interrupted_pool];
     assert_eq!(
-        retirement::retire(&mut interrupted, &mut remaining, &interrupted_envelope).unwrap(),
-        retirement::Outcome::Applied {
-            revision: interrupted_revision,
-            retired_pools: 1,
-            external_backups_unchanged: true,
-        }
+        retirement::prepare(&mut directory, &envelope),
+        Ok(retirement::Preparation::AlreadyPrepared {
+            revision: Revision::new(1)
+        })
     );
-    assert!(remaining[0].staged().unwrap().is_secret_erased());
-    assert!(interrupted.live.iter().all(Option::is_none));
+    // Preparation is not a completed result, even when retried after reboot.
+    assert_eq!(directory.live.iter().flatten().count(), 2);
+    let baseline = flash.copy_world();
+    retirement::remove_pool(&mut directory, HardwareSlot::new(0).unwrap(), &first).unwrap();
+    // Cuts during directory publication must never restore an operational device.
+    // The authoritative state may retain the live reference or its tombstone.
+    for cut in [0, 1, 2047, 2048, 32767, 32768, 65535, 65536] {
+        let mut interrupted = baseline.copy_world();
+        interrupted.arm_cut_after_bits(cut);
+        let _ =
+            journal.transact_successor(&mut interrupted, &mut rng, &token, &directory, &mut work);
+        interrupted.disarm();
+        let recovered = journal
+            .recover(&mut interrupted, &mut rng, &mut work)
+            .unwrap();
+        let denied = Device::from_authenticated_snapshot(&recovered.state).unwrap();
+        assert_eq!(
+            denied
+                .ensure_operational(UsePolicy::IsolatedDevelopment, None)
+                .err(),
+            Some(StateError::Retired)
+        );
+        assert_eq!(
+            recovered.state.live.iter().flatten().count()
+                + recovered.state.tombstones.iter().flatten().count(),
+            2
+        );
+    }
+    token = journal
+        .transact_successor(&mut flash, &mut rng, &token, &directory, &mut work)
+        .unwrap();
+    let tombstone = directory.tombstones.iter().flatten().next().unwrap();
+    assert_eq!(
+        tombstone.generation_high_water,
+        first.generation_high_water()
+    );
+    assert_eq!(tombstone.last_incarnation, first.incarnation());
+    retirement::remove_pool(&mut directory, HardwareSlot::new(1).unwrap(), &second).unwrap();
+    journal
+        .transact_successor(&mut flash, &mut rng, &token, &directory, &mut work)
+        .unwrap();
+    let recovered = journal.recover(&mut flash, &mut rng, &mut work).unwrap();
+    assert!(recovered.state.live.iter().all(Option::is_none));
+    assert_eq!(recovered.state.tombstones.iter().flatten().count(), 2);
+    assert_eq!(
+        recovered.state.retirement.unwrap().revision,
+        Revision::new(1)
+    );
+    assert_eq!(recovered.state.revision, Revision::new(3));
+    // Core deliberately does not claim physical erasure: firmware must erase
+    // and read-verify all slots before exposing the marker's public result.
+}
+
+#[cfg(feature = "protected-runtime")]
+#[test]
+fn retirement_reserves_cleanup_revisions_and_rejects_changed_authorization() {
+    let management = SigningKey::from_bytes(&fresh_retirement_seed());
+    let registered = pool(0x82, IncarnationId::from_bytes([0x83; 16]));
+    let payload = encode_payload(|encoder| encoder.map(0).unwrap());
+    let mut exhausted = directory_snapshot(&management, &[&registered], u64::MAX - 1);
+    let bytes = signed_envelope(
+        &management,
+        Target::Device,
+        1,
+        0x84,
+        exhausted.revision,
+        Action::DeviceRetire,
+        &payload,
+    );
+    assert_eq!(
+        retirement::prepare(&mut exhausted, &verify(&bytes, &management)),
+        Err(retirement::Error::CounterOverflow)
+    );
+    assert!(exhausted.retirement.is_none());
+    assert_eq!(exhausted.live.iter().flatten().count(), 1);
+
+    let mut directory = directory_snapshot(&management, &[&registered], 0);
+    assert_eq!(
+        retirement::remove_pool(&mut directory, HardwareSlot::new(0).unwrap(), &registered,),
+        Err(retirement::Error::NotPrepared)
+    );
+    let bytes = signed_envelope(
+        &management,
+        Target::Device,
+        1,
+        0x85,
+        directory.revision,
+        Action::DeviceRetire,
+        &payload,
+    );
+    retirement::prepare(&mut directory, &verify(&bytes, &management)).unwrap();
+    let changed = signed_envelope(
+        &management,
+        Target::Device,
+        1,
+        0x86,
+        Revision::new(0),
+        Action::DeviceRetire,
+        &payload,
+    );
+    assert_eq!(
+        retirement::prepare(&mut directory, &verify(&changed, &management)),
+        Err(retirement::Error::ChangedReplay)
+    );
+    let next = signed_envelope(
+        &management,
+        Target::Device,
+        2,
+        0x87,
+        directory.revision,
+        Action::DeviceRetire,
+        &payload,
+    );
+    assert_eq!(
+        retirement::prepare(&mut directory, &verify(&next, &management)),
+        Err(retirement::Error::Replay)
+    );
+    assert_eq!(
+        retirement::remove_pool(&mut directory, HardwareSlot::new(1).unwrap(), &registered,),
+        Err(retirement::Error::InconsistentPoolState)
+    );
+    assert_eq!(directory.live.iter().flatten().count(), 1);
+    assert!(directory.tombstones.iter().all(Option::is_none));
+}
+
+fn durable_enrollment_fixture() -> (
+    SigningKey,
+    Zeroizing<[u8; 32]>,
+    ChaCha20Rng,
+    enrollment_flash::NorFlash,
+    Vec<u8>,
+) {
+    use std::io::Read;
+    xtask::oracles::protect_memory().expect("fresh no-swap disposable lab required");
+    let mut seed = Zeroizing::new([0u8; 32]);
+    let mut root = Zeroizing::new([0u8; 32]);
+    let mut entropy = std::fs::File::open("/dev/urandom").unwrap();
+    entropy.read_exact(&mut seed[..]).unwrap();
+    let management = SigningKey::from_bytes(&seed);
+    entropy.read_exact(&mut root[..]).unwrap();
+    entropy.read_exact(&mut seed[..]).unwrap();
+    let mut rng = ChaCha20Rng::from_seed(*seed);
+    let mut flash = enrollment_flash::NorFlash::new(16384 + kes_core::MAX_POOLS * 32768);
+    let journal = kes_core::journal::Journal::<DirectoryCodec>::new(
+        JournalContext {
+            device: DEVICE,
+            scope: JournalScope::Directory,
+        },
+        kes_core::journal::JournalLayout::directory(0).unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    journal
+        .initialize(
+            &mut flash,
+            &mut rng,
+            &directory_snapshot(&management, &[], 0),
+            &mut kes_core::journal::Workspaces {
+                journal: &mut jw,
+                object: &mut ow,
+                cache: &mut cache,
+            },
+        )
+        .unwrap();
+    let cold = [0xa1; 32];
+    let incarnation = IncarnationId::from_bytes([0xa2; 16]);
+    let encoded = signed_envelope(
+        &management,
+        Target::Pool {
+            pool: PoolId::from_cold_verification_key(&cold),
+            incarnation,
+        },
+        1,
+        0xa3,
+        Revision::new(0),
+        Action::Enroll,
+        &enrollment_payload(cold, incarnation, [0xa4; 32]),
+    );
+    (management, root, rng, flash, encoded)
+}
+
+#[test]
+fn durable_enrollment_clean_and_exact_replay_use_authenticated_journals() {
+    let (_, root, mut rng, mut flash, encoded) = durable_enrollment_fixture();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    let ack = storage
+        .enroll(&encoded, &mut flash, &mut rng, &mut work)
+        .unwrap();
+    assert_eq!(ack.pool_revision, Revision::new(0));
+    assert_eq!(
+        storage
+            .enroll(&encoded, &mut flash, &mut rng, &mut work)
+            .unwrap(),
+        ack
+    );
+    let directory = storage
+        .recover_pending(&mut flash, &mut rng, &mut work)
+        .unwrap();
+    assert!(directory.state.pending_enrollment.is_none());
+    assert_eq!(directory.state.live.iter().flatten().count(), 1);
+    assert!(cache.is_erased());
+}
+
+#[test]
+fn durable_enrollment_power_cuts_recover_without_reusing_an_ambiguous_slot() {
+    let (_, root, mut rng, flash, encoded) = durable_enrollment_fixture();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    let mut probe = flash.copy_world();
+    probe.arm_cut_after_bits(usize::MAX);
+    let expected = storage
+        .enroll(&encoded, &mut probe, &mut rng, &mut work)
+        .unwrap();
+    let total = probe.steps();
+    let mut cuts: Vec<usize> = (0..total).step_by(8191).collect();
+    cuts.extend([1, 2047, 2048, total - 1, total]);
+    for cut in cuts {
+        let mut world = flash.copy_world();
+        world.arm_cut_after_bits(cut);
+        let first = storage.enroll(&encoded, &mut world, &mut rng, &mut work);
+        world.disarm();
+        let directory = storage
+            .recover_pending(&mut world, &mut rng, &mut work)
+            .unwrap_or_else(|e| panic!("recovery at bit {cut}: {e:?}"));
+        assert!(directory.state.pending_enrollment.is_none());
+        if first.is_ok() {
+            assert_eq!(directory.state.live.iter().flatten().count(), 1);
+        }
+        let ack = storage
+            .enroll(&encoded, &mut world, &mut rng, &mut work)
+            .unwrap_or_else(|e| panic!("replay at bit {cut}: {e:?}"));
+        assert_eq!(ack, expected);
+        assert_eq!(
+            storage
+                .enroll(&encoded, &mut world, &mut rng, &mut work)
+                .unwrap(),
+            expected
+        );
+    }
+}
+
+#[test]
+fn durable_enrollment_does_not_initialize_a_nonblank_unreserved_slot() {
+    let (_, root, mut rng, mut flash, encoded) = durable_enrollment_fixture();
+    flash.corrupt(16384 + 9000, 1).unwrap();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    assert_eq!(
+        storage.enroll(&encoded, &mut flash, &mut rng, &mut work),
+        Err(kes_core::enrollment::Error::SlotNotErased)
+    );
+    assert_eq!(flash.raw()[16384 + 9000], 254);
+    let directory = storage
+        .recover_pending(&mut flash, &mut rng, &mut work)
+        .unwrap();
+    assert!(directory.state.live.iter().all(Option::is_none));
+    assert!(directory.state.pending_enrollment.is_none());
+}
+
+#[test]
+fn durable_reenrollment_preserves_history_and_other_pool_slot() {
+    let (management, root, mut rng, mut flash, encoded) = durable_enrollment_fixture();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    storage
+        .enroll(&encoded, &mut flash, &mut rng, &mut work)
+        .unwrap();
+    let other_slot = flash.raw()[16384..16384 + 32768].to_vec();
+    let cold = [0xb1; 32];
+    let target = PoolId::from_cold_verification_key(&cold);
+    let old_incarnation = IncarnationId::from_bytes([0xb2; 16]);
+    let new_incarnation = IncarnationId::from_bytes([0xb3; 16]);
+    let journal = kes_core::journal::Journal::<DirectoryCodec>::new(
+        JournalContext {
+            device: DEVICE,
+            scope: JournalScope::Directory,
+        },
+        kes_core::journal::JournalLayout::directory(0).unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut directory = storage
+        .recover_pending(&mut flash, &mut rng, &mut work)
+        .unwrap();
+    directory.state.revision = directory.state.revision.checked_increment().unwrap();
+    let deletion_revision = directory.state.revision;
+    directory.state.tombstones[0] = Some(kes_core::state::PoolTombstone {
+        pool_id: target,
+        last_incarnation: old_incarnation,
+        credential_epoch: Some(kes_core::types::CredentialEpoch::new(0)),
+        management_sequence: ManagementSequence::new(9),
+        certificate_high_water: Some(kes_core::types::CertificateCounter::new(17)),
+        generation_high_water: GenerationNumber::new(23),
+        deletion_revision,
+        management_replay: kes_core::state::ManagementReplay {
+            sequence: ManagementSequence::new(9),
+            request: RequestId::from_bytes([0xb4; 16]),
+            payload_digest: [0xb5; 32],
+            result: kes_core::state::ManagementResult::Committed {
+                revision: deletion_revision,
+            },
+        },
+    });
+    journal
+        .transact_successor(
+            &mut flash,
+            &mut rng,
+            &directory.token,
+            &directory.state,
+            &mut work,
+        )
+        .unwrap();
+    let reenroll = signed_envelope(
+        &management,
+        Target::Pool {
+            pool: target,
+            incarnation: new_incarnation,
+        },
+        10,
+        0xb6,
+        deletion_revision,
+        Action::Enroll,
+        &enrollment_payload(cold, new_incarnation, [0xb7; 32]),
+    );
+    let before_enrollment = flash.copy_world();
+    flash.arm_cut_after_bits(usize::MAX);
+    let ack = storage
+        .enroll(&reenroll, &mut flash, &mut rng, &mut work)
+        .unwrap();
+    let transaction_bits = flash.steps();
+    flash.disarm();
+    assert_eq!(ack.slot.get(), 1);
+    assert_eq!(&flash.raw()[16384..16384 + 32768], other_slot.as_slice());
+    let pool_journal = kes_core::journal::Journal::<PoolCodec>::new(
+        JournalContext {
+            device: DEVICE,
+            scope: JournalScope::Pool {
+                slot: ack.slot,
+                pool: target,
+                incarnation: new_incarnation,
+            },
+        },
+        kes_core::journal::JournalLayout::pool(16384 + 32768).unwrap(),
+        &root,
+    )
+    .unwrap();
+    let recovered = pool_journal
+        .recover(&mut flash, &mut rng, &mut work)
+        .unwrap();
+    assert_eq!(
+        recovered.state.generation_high_water(),
+        GenerationNumber::new(23)
+    );
+    assert_eq!(
+        recovered.state.certificate_high_water(),
+        Some(kes_core::types::CertificateCounter::new(17))
+    );
+    assert_eq!(
+        recovered.state.management_sequence(),
+        ManagementSequence::new(10)
+    );
+    let directory = storage
+        .recover_pending(&mut flash, &mut rng, &mut work)
+        .unwrap();
+    assert!(directory.state.tombstones.iter().all(Option::is_none));
+    assert_eq!(directory.state.live.iter().flatten().count(), 2);
+    assert_eq!(
+        storage
+            .enroll(&reenroll, &mut flash, &mut rng, &mut work)
+            .unwrap(),
+        ack
+    );
+    for cut in (0..transaction_bits).step_by(8191) {
+        let mut world = before_enrollment.copy_world();
+        world.arm_cut_after_bits(cut);
+        let _ = storage.enroll(&reenroll, &mut world, &mut rng, &mut work);
+        world.disarm();
+        let directory = storage
+            .recover_pending(&mut world, &mut rng, &mut work)
+            .unwrap();
+        // Before intent COMMIT the complete tombstone remains authoritative;
+        // afterward recovery publishes a pool with the exact retained history.
+        if let Some(t) = directory
+            .state
+            .tombstones
+            .iter()
+            .flatten()
+            .find(|t| t.pool_id == target)
+        {
+            assert_eq!(t.generation_high_water, GenerationNumber::new(23));
+            assert_eq!(
+                t.certificate_high_water,
+                Some(kes_core::types::CertificateCounter::new(17))
+            );
+            assert_eq!(t.management_sequence, ManagementSequence::new(9));
+        }
+        assert_eq!(
+            storage
+                .enroll(&reenroll, &mut world, &mut rng, &mut work)
+                .unwrap(),
+            ack
+        );
+        let recovered = pool_journal
+            .recover(&mut world, &mut rng, &mut work)
+            .unwrap();
+        assert_eq!(
+            recovered.state.generation_high_water(),
+            GenerationNumber::new(23)
+        );
+        assert_eq!(
+            recovered.state.certificate_high_water(),
+            Some(kes_core::types::CertificateCounter::new(17))
+        );
+        assert_eq!(
+            recovered.state.management_sequence(),
+            ManagementSequence::new(10)
+        );
+        assert_eq!(&world.raw()[16384..16384 + 32768], other_slot.as_slice());
+    }
+}
+
+#[test]
+fn durable_enrollment_rejects_changed_replay_and_damaged_live_pool_without_reset() {
+    let (management, root, mut rng, mut flash, encoded) = durable_enrollment_fixture();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    storage
+        .enroll(&encoded, &mut flash, &mut rng, &mut work)
+        .unwrap();
+    let cold = [0xa1; 32];
+    let incarnation = IncarnationId::from_bytes([0xa2; 16]);
+    let changed = signed_envelope(
+        &management,
+        Target::Pool {
+            pool: PoolId::from_cold_verification_key(&cold),
+            incarnation,
+        },
+        1,
+        0xa3,
+        Revision::new(0),
+        Action::Enroll,
+        &enrollment_payload(cold, incarnation, [0xcc; 32]),
+    );
+    assert_eq!(
+        storage.enroll(&changed, &mut flash, &mut rng, &mut work),
+        Err(kes_core::enrollment::Error::ChangedReplay)
+    );
+    flash.corrupt(16384 + 64, 1).unwrap();
+    let damaged = flash.raw()[16384..16384 + 32768].to_vec();
+    assert!(
+        storage
+            .enroll(&encoded, &mut flash, &mut rng, &mut work)
+            .is_err()
+    );
+    assert_eq!(&flash.raw()[16384..16384 + 32768], damaged.as_slice());
+}
+
+#[test]
+fn pending_enrollment_rejects_other_requests_and_recovers_interrupted_recovery() {
+    let (management, root, mut rng, flash, encoded) = durable_enrollment_fixture();
+    let storage = kes_core::enrollment::EnrollmentStorage::new(DEVICE, 0, 16384, &root).unwrap();
+    let directory_journal = kes_core::journal::Journal::<DirectoryCodec>::new(
+        JournalContext {
+            device: DEVICE,
+            scope: JournalScope::Directory,
+        },
+        kes_core::journal::JournalLayout::directory(0).unwrap(),
+        &root,
+    )
+    .unwrap();
+    let mut jw = kes_core::journal::JournalWorkspace::new();
+    let mut ow = kes_core::journal::ObjectWorkspace::new();
+    let mut cache = kes_core::journal::SecretCache::new();
+    let mut work = kes_core::journal::Workspaces {
+        journal: &mut jw,
+        object: &mut ow,
+        cache: &mut cache,
+    };
+    let mut probe = flash.copy_world();
+    probe.arm_cut_after_bits(usize::MAX);
+    storage
+        .enroll(&encoded, &mut probe, &mut rng, &mut work)
+        .unwrap();
+    let mut pending_world = None;
+    for cut in (0..probe.steps()).step_by(8191) {
+        let mut world = flash.copy_world();
+        world.arm_cut_after_bits(cut);
+        let _ = storage.enroll(&encoded, &mut world, &mut rng, &mut work);
+        world.disarm();
+        if directory_journal
+            .recover(&mut world, &mut rng, &mut work)
+            .unwrap()
+            .state
+            .pending_enrollment
+            .is_some()
+        {
+            pending_world = Some(world);
+            break;
+        }
+    }
+    let mut pending_world =
+        pending_world.expect("fault model must expose a durable enrollment intent");
+    let cold = [0xd1; 32];
+    let incarnation = IncarnationId::from_bytes([0xd2; 16]);
+    let unrelated = signed_envelope(
+        &management,
+        Target::Pool {
+            pool: PoolId::from_cold_verification_key(&cold),
+            incarnation,
+        },
+        1,
+        0xd3,
+        Revision::new(0),
+        Action::Enroll,
+        &enrollment_payload(cold, incarnation, [0xd4; 32]),
+    );
+    let before = pending_world.raw()[16384..].to_vec();
+    assert_eq!(
+        storage.enroll(&unrelated, &mut pending_world, &mut rng, &mut work),
+        Err(kes_core::enrollment::Error::PendingOperation)
+    );
+    assert_eq!(&pending_world.raw()[16384..], before.as_slice());
+    for cut in [1, 2047, 2048, 8191, 32767, 65535] {
+        let mut world = pending_world.copy_world();
+        world.arm_cut_after_bits(cut);
+        let _ = storage.recover_pending(&mut world, &mut rng, &mut work);
+        world.disarm();
+        let directory = storage
+            .recover_pending(&mut world, &mut rng, &mut work)
+            .unwrap();
+        assert!(directory.state.pending_enrollment.is_none());
+        assert_eq!(directory.state.live.iter().flatten().count(), 1);
+        storage
+            .enroll(&encoded, &mut world, &mut rng, &mut work)
+            .unwrap();
+    }
 }

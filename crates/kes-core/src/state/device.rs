@@ -65,6 +65,8 @@ impl DirectoryEntry {
 pub struct PoolTombstone {
     pub pool_id: PoolId,
     pub last_incarnation: IncarnationId,
+    /// Last credential epoch, absent only for authenticated pre-v5 snapshots.
+    pub credential_epoch: Option<CredentialEpoch>,
     pub management_sequence: ManagementSequence,
     pub certificate_high_water: Option<CertificateCounter>,
     pub generation_high_water: GenerationNumber,
@@ -78,6 +80,14 @@ pub struct DeletionIntent {
     pub expected_pool_revision: Revision,
     pub pool_cleanup_revision: Revision,
     pub tombstone: PoolTombstone,
+}
+
+/// Authenticated authority to initialize exactly one previously erased, non-live
+/// slot. Retained history stays in the directory until publication completes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnrollmentIntent {
+    pub slot: HardwareSlot,
+    pub enrollment: super::pool::Enrollment,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +128,7 @@ pub struct DirectorySnapshot {
     pub retirement: Option<DeviceRetirement>,
     pub credential: DeviceCredential,
     pub pending_deletion: Option<DeletionIntent>,
+    pub pending_enrollment: Option<EnrollmentIntent>,
     pub live: [Option<DirectoryEntry>; crate::MAX_POOLS],
     pub tombstones: [Option<PoolTombstone>; DIRECTORY_IDENTITY_CAPACITY],
 }
@@ -192,6 +203,39 @@ impl Device {
                     return Err(StateError::InvalidObject);
                 }
             }
+        }
+        if let Some(intent) = snapshot.pending_enrollment {
+            let pool = PoolRegistration::new(Actor::Management, intent.enrollment)?;
+            if snapshot.pending_deletion.is_some()
+                || snapshot.retirement.is_some()
+                || snapshot
+                    .live
+                    .iter()
+                    .flatten()
+                    .any(|entry| entry.slot() == intent.slot || entry.pool_id() == pool.pool_id())
+            {
+                return Err(StateError::InvalidObject);
+            }
+            if let Some(tombstone) = snapshot
+                .tombstones
+                .iter()
+                .flatten()
+                .find(|t| t.pool_id == pool.pool_id())
+            {
+                if tombstone.last_incarnation == pool.incarnation()
+                    || tombstone.management_sequence.checked_increment().ok()
+                        != Some(pool.management_sequence())
+                {
+                    return Err(StateError::InvalidObject);
+                }
+            } else if pool.management_sequence() != ManagementSequence::new(1)
+                || snapshot.live.iter().flatten().count()
+                    + snapshot.tombstones.iter().flatten().count()
+                    >= DIRECTORY_IDENTITY_CAPACITY
+            {
+                return Err(StateError::InvalidObject);
+            }
+            device.pending_deletion = true;
         }
         if let Some(intent) = snapshot.pending_deletion {
             let expected_deletion_revision = snapshot

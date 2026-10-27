@@ -34,7 +34,9 @@ struct MachineCredentialFile {
     algorithm: String,
     scope: String,
     device_id: String,
+    #[serde(deserialize_with = "super::bootstrap::required_nullable")]
     pool_id: Option<String>,
+    #[serde(deserialize_with = "super::bootstrap::required_nullable")]
     incarnation_id: Option<String>,
     credential_epoch: u64,
     public_key: String,
@@ -165,6 +167,10 @@ impl DeviceIdentity {
     }
 
     pub fn verify_release_readiness(&self) -> Result<(), Error> {
+        self.verified_release_record().map(|_| ())
+    }
+
+    pub(crate) fn verified_release_record(&self) -> Result<super::provisioning::Record, Error> {
         let manifest = read_public(&self.provisioning_manifest_file)?;
         let record = read_public(&self.provisioning_record_file)?;
         let reviewer = read_public(&self.reviewer_public_key_file)?;
@@ -174,8 +180,14 @@ impl DeviceIdentity {
             containing_directory(&self.provisioning_manifest_file),
         )
         .map_err(|_| Error::Security)?;
+        super::provisioning::verify_reference_authorities(
+            &parsed,
+            containing_directory(&self.provisioning_manifest_file),
+            self,
+            &reviewer,
+        )
+        .map_err(|_| Error::Security)?;
         super::provisioning::verify_release_readiness(self, &manifest, &record, &reviewer)
-            .map(|_| ())
             .map_err(|_| Error::Security)
     }
 }
@@ -193,6 +205,19 @@ struct DeviceConfigFile {
     security_policy: String,
 }
 
+/// Public operator view of a management connection. Private transport material
+/// is loaded only by `DeviceConfig`, inside the daemon.
+pub struct DeviceConnection {
+    pub socket_path: PathBuf,
+    pub device_id: [u8; 16],
+    pub device_identity_file: PathBuf,
+    pub connection_name: String,
+    pub credential_file: PathBuf,
+    pub credential_epoch: u64,
+    pub identity: DeviceIdentity,
+    pub security_policy: String,
+}
+
 pub struct DeviceConfig {
     pub socket_path: PathBuf,
     pub device_id: [u8; 16],
@@ -204,13 +229,15 @@ pub struct DeviceConfig {
     pub security_policy: String,
 }
 
-impl DeviceConfig {
+impl DeviceConnection {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let bytes = read_public(path)?;
         let file: DeviceConfigFile = serde_json::from_slice(&bytes).map_err(|_| Error::Invalid)?;
         if file.version != 1
             || !valid_connection(&file.connection_name)
             || !valid_policy(&file.security_policy)
+            || file.socket_path.as_os_str().is_empty()
+            || file.credential_file.as_os_str().is_empty()
         {
             return Err(Error::Invalid);
         }
@@ -222,12 +249,7 @@ impl DeviceConfig {
             identity.verify_release_readiness()?;
         }
         let device_id = decode_hex(&file.device_id).ok_or(Error::Invalid)?;
-        let credential = load_credential(&credential_file, "management", device_id, None, None)?;
-        if identity.device_id != device_id
-            || credential.epoch != file.credential_epoch
-            || identity.credential_epoch != file.credential_epoch
-            || credential.public_key != identity.management_transport_public_key
-        {
+        if identity.device_id != device_id || file.credential_epoch < identity.credential_epoch {
             return Err(Error::Security);
         }
         Ok(Self {
@@ -236,9 +258,41 @@ impl DeviceConfig {
             device_identity_file,
             connection_name: file.connection_name,
             credential_file,
-            credential,
+            credential_epoch: file.credential_epoch,
             identity,
             security_policy: file.security_policy,
+        })
+    }
+}
+
+impl DeviceConfig {
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        // The identity records the initial ceremony, not mutable authorization.
+        // Later candidates are authorized only by fresh pinned-device OPEN
+        // against the device's durably committed current credential policy.
+        let public = DeviceConnection::load(path)?;
+        let credential = load_credential(
+            &public.credential_file,
+            "management",
+            public.device_id,
+            None,
+            None,
+        )?;
+        if credential.epoch != public.credential_epoch
+            || (credential.epoch == public.identity.credential_epoch
+                && credential.public_key != public.identity.management_transport_public_key)
+        {
+            return Err(Error::Security);
+        }
+        Ok(Self {
+            socket_path: public.socket_path,
+            device_id: public.device_id,
+            device_identity_file: public.device_identity_file,
+            connection_name: public.connection_name,
+            credential_file: public.credential_file,
+            credential,
+            identity: public.identity,
+            security_policy: public.security_policy,
         })
     }
 }
@@ -259,20 +313,31 @@ struct PoolConnectionFile {
 }
 
 pub struct PoolConnection {
+    pub public: PublicPoolConnection,
+    pub credential: MachineCredential,
+}
+
+impl Deref for PoolConnection {
+    type Target = PublicPoolConnection;
+    fn deref(&self) -> &Self::Target {
+        &self.public
+    }
+}
+
+pub struct PublicPoolConnection {
     pub socket_path: PathBuf,
     pub device_id: [u8; 16],
     pub pool_id: [u8; 28],
     pub incarnation_id: [u8; 16],
-    pub identity_public_key: [u8; 32],
     pub network_binding: NetworkBinding,
     pub connection_name: String,
+    pub identity_public_key: [u8; 32],
     pub device_identity_file: PathBuf,
     pub credential_file: PathBuf,
-    pub credential: MachineCredential,
     pub security_policy: String,
 }
 
-impl PoolConnection {
+impl PublicPoolConnection {
     pub fn load(path: &Path) -> Result<Self, Error> {
         let bytes = read_public(path)?;
         let file: PoolConnectionFile =
@@ -289,16 +354,12 @@ impl PoolConnection {
         let device_identity_file = resolve(base, file.device_identity_file);
         let socket_path = resolve(base, file.socket_path);
         let identity = DeviceIdentity::load(&device_identity_file)?;
+        if file.security_policy == "release-required" {
+            identity.verify_release_readiness()?;
+        }
         let device_id = decode_hex(&file.device_id).ok_or(Error::Invalid)?;
         let pool_id = decode_hex(&file.pool_id).ok_or(Error::Invalid)?;
         let incarnation_id = decode_hex(&file.incarnation_id).ok_or(Error::Invalid)?;
-        let credential = load_credential(
-            &credential_file,
-            "pool",
-            device_id,
-            Some(pool_id),
-            Some(incarnation_id),
-        )?;
         if identity.device_id != device_id {
             return Err(Error::Security);
         }
@@ -312,9 +373,22 @@ impl PoolConnection {
             connection_name: file.connection_name,
             device_identity_file,
             credential_file,
-            credential,
             security_policy: file.security_policy,
         })
+    }
+}
+
+impl PoolConnection {
+    pub fn load(path: &Path) -> Result<Self, Error> {
+        let public = PublicPoolConnection::load(path)?;
+        let credential = load_credential(
+            &public.credential_file,
+            "pool",
+            public.device_id,
+            Some(public.pool_id),
+            Some(public.incarnation_id),
+        )?;
+        Ok(Self { public, credential })
     }
 }
 

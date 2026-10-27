@@ -220,26 +220,28 @@ pub fn verify(
     sum6::verify(verification_key, period.get(), message, fixed).map_err(Into::into)
 }
 
-/// Caller-supplied fresh healthy seed; no RNG fallback. The secure scheduler
-/// owns the single global job. Separate output/tree lifetimes let a completed
-/// key be used while retaining the immutable validated cache without copying it.
-pub struct Generation<'state, 'tree> {
-    inner: sum6::Generation<'state, 'tree>,
+/// Owned, allocation-free cooperative job, safe to retain between scheduler
+/// turns. Input entropy must be fresh and healthy; `begin` wipes the seed.
+/// Cancellation/drop wipes all unpublished secret material.
+pub struct Generation {
+    inner: sum6::Generation,
+    lifetime: KesLifetime,
 }
-impl<'state, 'tree> Generation<'state, 'tree> {
-    pub fn begin(
-        seed: &mut [u8; 32],
-        output: &'state mut KesKey,
-        tree: &'tree mut PublicTreeBuffer,
-    ) -> Result<Self, CryptoError> {
+impl Generation {
+    pub fn begin(seed: &mut [u8; 32], lifetime: KesLifetime) -> Result<Self, CryptoError> {
         Ok(Self {
-            inner: sum6::Generation::begin(seed, &mut output.state, tree)?,
+            inner: sum6::Generation::begin(seed)?,
+            lifetime,
         })
     }
     pub fn step(&mut self) -> Result<u8, CryptoError> {
         Ok(self.inner.step()?.completed_leaves)
     }
-    pub fn finish(self) -> Result<VerifiedPublicTree<'tree>, CryptoError> {
-        self.inner.finish().map_err(Into::into)
+    pub const fn completed_leaves(&self) -> u8 {
+        self.inner.completed_leaves()
+    }
+    pub fn finish(self) -> Result<(KesKey, PublicTreeBuffer), CryptoError> {
+        let (state, tree) = self.inner.finish()?;
+        Ok((KesKey { state, lifetime: self.lifetime }, tree))
     }
 }

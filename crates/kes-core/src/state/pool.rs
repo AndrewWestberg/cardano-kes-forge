@@ -14,6 +14,7 @@ use sha2::{Digest, Sha256};
 
 mod codec;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Enrollment {
     pub incarnation: IncarnationId,
     pub cold_verification_key: [u8; 32],
@@ -121,6 +122,7 @@ pub struct PoolRegistration {
     certificate_high_water: Option<CertificateCounter>,
     current: Option<KESGeneration>,
     staged: Option<KESGeneration>,
+    generation_checkpoint: Option<crate::generation::GenerationCheckpoint>,
 }
 
 pub(crate) struct FirstActivationTransition<'a> {
@@ -193,6 +195,7 @@ impl PoolRegistration {
             certificate_high_water: None,
             current: None,
             staged: None,
+            generation_checkpoint: None,
         })
     }
     pub const fn pool_id(&self) -> PoolId {
@@ -262,6 +265,38 @@ impl PoolRegistration {
         }
     }
 
+    pub const fn generation_checkpoint(&self) -> Option<crate::generation::GenerationCheckpoint> {
+        self.generation_checkpoint
+    }
+
+    pub(crate) fn set_generation_checkpoint(
+        &mut self,
+        checkpoint: crate::generation::GenerationCheckpoint,
+    ) -> Result<(), StateError> {
+        let revision = self
+            .revision
+            .checked_increment()
+            .map_err(|_| StateError::CounterOverflow)?;
+        self.generation_checkpoint = Some(checkpoint);
+        self.revision = revision;
+        Ok(())
+    }
+
+    pub(crate) fn finish_generation_checkpoint(
+        &mut self,
+        checkpoint: crate::generation::GenerationCheckpoint,
+    ) {
+        self.generation_checkpoint = Some(checkpoint);
+    }
+
+    fn abort_generation_checkpoint(&mut self) {
+        if let Some(checkpoint) = self.generation_checkpoint.as_mut()
+            && checkpoint.outcome == crate::generation::CheckpointOutcome::InProgress
+        {
+            checkpoint.outcome = crate::generation::CheckpointOutcome::NotCommitted;
+        }
+    }
+
     pub(crate) fn commit_recipient_replacement(
         &mut self,
         public_key: [u8; 32],
@@ -274,6 +309,7 @@ impl PoolRegistration {
         self.recipient_id = recipient_id;
         self.recipient_policy_epoch = policy_epoch;
         self.management_replay = replay;
+        self.abort_generation_checkpoint();
         self.revision = revision;
     }
 
@@ -289,6 +325,7 @@ impl PoolRegistration {
         self.credential_epoch = epoch;
         self.credential_revoked = revoked;
         self.management_replay = replay;
+        self.abort_generation_checkpoint();
         self.revision = revision;
     }
 
@@ -318,6 +355,7 @@ impl PoolRegistration {
         self.erase_all_secrets();
         self.current = None;
         self.staged = None;
+        self.abort_generation_checkpoint();
         self.management_replay = replay;
         self.revision = revision;
     }
@@ -929,7 +967,7 @@ impl KESGeneration {
 mod tests {
     extern crate std;
     use super::*;
-    use crate::crypto::{Generation, PublicTreeBuffer, verify};
+    use crate::crypto::{Generation, verify};
     use crate::types::AbsolutePeriod;
     use ed25519_dalek::{Signer, SigningKey};
     use std::io::Read;
@@ -970,13 +1008,12 @@ mod tests {
             .read_exact(&mut *seed)
             .expect("OS entropy unavailable");
         let lifetime = KesLifetime::new(64).unwrap();
-        let mut key = KesKey::erased(lifetime);
-        let mut tree = PublicTreeBuffer::new();
-        let mut job = Generation::begin(&mut seed, &mut key, &mut tree).unwrap();
+        let mut job = Generation::begin(&mut seed, lifetime).unwrap();
         for _ in 0..64 {
             job.step().unwrap();
         }
-        let cache = job.finish().unwrap();
+        let (key, tree) = job.finish().unwrap();
+        let cache = tree.verify(&key.verification_key().unwrap()).unwrap();
         let hot = key.verification_key().unwrap();
         let recipient = [0x73; 32];
         let network =

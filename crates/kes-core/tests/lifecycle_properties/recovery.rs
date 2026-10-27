@@ -4,7 +4,7 @@ use kes_core::{
         ActivationRequest, CertificationRequest, DurablePool, EvolutionRequest, OperationError,
     },
     certificate::CertificateError,
-    crypto::{CryptoError, Generation, KesKey, PublicTreeBuffer},
+    crypto::{CryptoError, Generation},
     journal::JournalLayout,
     state::{GenerationSpec, KESGeneration, Lifecycle, PublicObject, PublicObjectRef, StateError},
     types::{
@@ -242,18 +242,12 @@ fn stage_replacement_and_expire(
         .try_fill_bytes(&mut *replacement_seed)
         .unwrap();
     let lifetime = KesLifetime::new(64).unwrap();
-    let mut replacement_key = KesKey::erased(lifetime);
-    let mut replacement_tree = PublicTreeBuffer::new();
-    let mut generation = Generation::begin(
-        &mut replacement_seed,
-        &mut replacement_key,
-        &mut replacement_tree,
-    )
-    .unwrap();
+    let mut generation = Generation::begin(&mut replacement_seed, lifetime).unwrap();
     for _ in 0..64 {
         generation.step().unwrap();
     }
-    let replacement_cache = generation.finish().unwrap();
+    let (replacement_key, replacement_tree) = generation.finish().unwrap();
+    let replacement_cache = replacement_tree.verify(&replacement_key.verification_key().unwrap()).unwrap();
     let replacement_vk = replacement_key.verification_key().unwrap();
     let replacement_id = GenerationId::from_bytes([0x92; 16]);
     let replacement_object = PublicObject::from_parts(

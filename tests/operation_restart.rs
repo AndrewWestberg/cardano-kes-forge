@@ -1,6 +1,6 @@
 use cardano_kes_forge::host::{
     client::{BackupResult, GenerationResult},
-    config::PoolConnection,
+    config::PublicPoolConnection,
     operations::{Error as OperationError, OperationRecord, State},
     publication::{self, GenerationOutput, PublicationFault},
 };
@@ -56,13 +56,7 @@ impl Fixture {
             0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
         ];
         spki_der.extend(signing.verifying_key().to_bytes());
-        let mut pkcs8_der = vec![
-            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-            0x04, 0x20,
-        ];
-        pkcs8_der.extend([0x61; 32]);
         let spki = base64(&spki_der);
-        let pkcs8 = base64(&pkcs8_der);
         write_mode(
             &identity,
             &format!(
@@ -81,16 +75,8 @@ impl Fixture {
         write_mode(&provisioning_record, "{}", 0o644);
         write_mode(&provisioning_manifest, "{}", 0o644);
         write_mode(&reviewer, "{}", 0o644);
-        write_mode(
-            &credential,
-            &format!(
-                "{{\"version\":1,\"algorithm\":\"Ed25519\",\"scope\":\"pool\",\"deviceId\":\"{}\",\"poolId\":\"{}\",\"incarnationId\":\"{}\",\"credentialEpoch\":0,\"publicKey\":\"{spki}\",\"privateKey\":\"{pkcs8}\"}}",
-                hex(&DEVICE),
-                hex(&POOL),
-                hex(&INCARNATION)
-            ),
-            0o600,
-        );
+        // Operator processes have no daemon transport credential on disk.
+        assert!(!credential.exists());
         write_mode(
             &connection,
             &format!(
@@ -490,7 +476,7 @@ impl PublicationFault for AbortAfter {
 }
 
 fn publish_fixture(root: &Path, boundary: Option<GenerationOutput>, prefix: &str) {
-    let connection = PoolConnection::load(&root.join("pool.connection.json")).unwrap();
+    let connection = PublicPoolConnection::load(&root.join("pool.connection.json")).unwrap();
     let artifact = signed_artifact();
     let digest: [u8; 32] = Sha256::digest(&artifact).into();
     let result = GenerationResult {
@@ -620,4 +606,107 @@ fn base64(input: &[u8]) -> String {
         });
     }
     output
+}
+
+#[test]
+fn status_cli_uses_public_connection_and_reports_absent_node_data_as_null() {
+    use cardano_kes_forge::host::{
+        client::operator_status,
+        observation::NetworkContext,
+        signing::{Binding, Router},
+    };
+    let fixture = Fixture::new();
+    let listener = UnixListener::bind(&fixture.socket).unwrap();
+    let server = thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut prefix = [0; 4];
+        stream.read_exact(&mut prefix).unwrap();
+        let mut request = vec![0; u32::from_be_bytes(prefix) as usize];
+        stream.read_exact(&mut request).unwrap();
+        let envelope = Envelope::parse(&request, EnvelopeKind::LocalRequest).unwrap();
+        assert_eq!(envelope.operation, Operation::Status);
+        assert!(
+            envelope
+                .payload()
+                .required("host_diagnostics")
+                .unwrap()
+                .boolean()
+                .unwrap()
+        );
+        let request = *envelope.request().unwrap().as_bytes();
+        let response = response(Operation::Status, request, Status::Ok, |e| {
+            e.map(9).unwrap();
+            e.text("active").unwrap();
+            e.null().unwrap();
+            e.text("health").unwrap();
+            e.text("healthy").unwrap();
+            e.text("staged").unwrap();
+            e.null().unwrap();
+            e.text("revoked").unwrap();
+            e.boolean(false).unwrap();
+            e.text("revision").unwrap();
+            e.uint(0).unwrap();
+            e.text("directory").unwrap();
+            e.array(0).unwrap();
+            e.text("security_mode").unwrap();
+            e.text("development").unwrap();
+            e.text("blocking_reason").unwrap();
+            e.text("no active generation").unwrap();
+            e.text("credential_epoch").unwrap();
+            e.uint(0).unwrap();
+        });
+        let router = Router::new([(
+            CONNECTION.to_owned(),
+            Binding {
+                device: DEVICE,
+                pool: POOL,
+                incarnation: INCARNATION,
+                network: NetworkContext {
+                    network_magic: 42,
+                    shelley_genesis_digest: DIGEST,
+                    slots_per_kes_period: 64,
+                    max_kes_evolutions: 64,
+                },
+            },
+        )])
+        .unwrap();
+        let mut bytes = [0; kes_protocol::MAX_FRAME_BYTES];
+        let length = operator_status::attach(
+            &response,
+            &mut bytes,
+            &DEVICE,
+            Some((&POOL, &INCARNATION)),
+            &router,
+            CONNECTION,
+        )
+        .unwrap();
+        send_response(stream, &bytes[..length]);
+    });
+    let output = Command::new(env!("CARGO_BIN_EXE_kes-forge"))
+        .arg("status")
+        .arg("--connection")
+        .arg(&fixture.connection)
+        .arg("--json")
+        .output()
+        .unwrap();
+    server.join().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["result"]["observation"]["state"], "unavailable");
+    assert!(value["result"]["observation"]["confirmedAgeMs"].is_null());
+    assert!(value["result"]["ready"].is_null());
+    assert!(value["result"]["remainingValidityPeriods"].is_null());
+    assert!(
+        !value["result"]["releaseEvidenceVerified"]
+            .as_bool()
+            .unwrap()
+    );
+    for entry in value["result"]["latency"].as_object().unwrap().values() {
+        assert_eq!(entry["state"], "unavailable");
+        assert!(entry["sample"].is_null());
+    }
 }
